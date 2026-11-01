@@ -1079,6 +1079,7 @@ struct Model::Impl {
     std::vector<Layer> L;
     std::vector<Src> srcs;
     std::vector<Group> groups;
+    NvArState nv_ar;             // (DS4_AR_NVLINK: the copy engines' staging and progress words)
     std::vector<std::unique_ptr<Worker>> workers;   // threads mode: one per device
     bool par = false;                 // threads mode (the windows: decode)
     bool prompt_par = false;          // the prompt path's chunks (a thread a GPU), as --tp / --threads asked
@@ -3190,6 +3191,67 @@ struct Model::Impl {
     }
 
     // ---- loading
+    // DS4_AR_NVLINK=1: a group of two's chunk all-reduces over NVLink by the copy engines.  A 256 MB BAR1 takes the
+    // copy engines' peer access but not the kernels' peer loads (#762), so the pieces go through staging buffers
+    // (16 MB a member at 4 MB a piece; the fallback is 8 MB at 2 MB a piece).
+    void nvlink_place() {
+        const char* e = std::getenv("DS4_AR_NVLINK");
+        if (e == nullptr || std::atoi(e) == 0 || devs.size() != 2) return;
+        int can = 0;
+        if (cudaSetDevice(devs[0].id) != cudaSuccess ||
+            cudaDeviceCanAccessPeer(&can, devs[0].id, devs[1].id) != cudaSuccess || !can)
+            return;
+        (void) cudaSetDevice(devs[1].id);
+        (void) cudaDeviceEnablePeerAccess(devs[0].id, 0);
+        (void) cudaGetLastError();
+        (void) cudaSetDevice(devs[0].id);
+        (void) cudaDeviceEnablePeerAccess(devs[1].id, 0);
+        (void) cudaGetLastError();
+        NvArState st;
+        st.dev[0] = devs[0].id;
+        st.dev[1] = devs[1].id;
+        st.slots = 2;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            st.stage = (size_t) (attempt == 0 ? (1 << 20) : (1 << 19));   // floats: 4 MB, then 2 MB
+            st.pmax = attempt == 0 ? 128 : 256;
+            bool ok = true;
+            for (int m = 0; m < 2 && ok; ++m) {
+                (void) cudaSetDevice(st.dev[m]);
+                for (int sl = 0; sl < st.slots && ok; ++sl) {
+                    if (cudaMalloc((void**) &st.own[m][sl], st.stage * 4) != cudaSuccess) { ok = false; break; }
+                    if (cudaMalloc((void**) &st.recv[m][sl], st.stage * 4) != cudaSuccess) { ok = false; break; }
+                }
+            }
+            unsigned* flags = nullptr;
+            if (ok && cudaHostAlloc((void**) &flags, sizeof(unsigned) * 2 * 2 * st.slots * st.pmax,
+                                cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess) {
+                std::memset(flags, 0, sizeof(unsigned) * 2 * 2 * st.slots * st.pmax);
+                st.flags = flags;
+                st.on = true;
+                nv_ar = st;
+                std::fprintf(stderr, "ds4: DS4_AR_NVLINK: NVLink copy-engine all-reduce, %.0f MB of staging a member, "
+                                     "%zu KB a piece\n", st.stage * 4.0 * st.slots * 2 / 1e6, st.stage * 4 >> 10);
+                return;
+            }
+            (void) cudaGetLastError();
+            for (int m = 0; m < 2; ++m)
+                for (int sl = 0; sl < st.slots; ++sl) {
+                    if (st.own[m][sl] != nullptr) {
+                        (void) cudaSetDevice(st.dev[m]);
+                        (void) cudaFree(st.own[m][sl]);
+                        st.own[m][sl] = nullptr;
+                    }
+                    if (st.recv[m][sl] != nullptr) {
+                        (void) cudaSetDevice(st.dev[m]);
+                        (void) cudaFree(st.recv[m][sl]);
+                        st.recv[m][sl] = nullptr;
+                    }
+                }
+            if (flags != nullptr) (void) cudaFreeHost(flags);
+        }
+        std::fprintf(stderr, "ds4: DS4_AR_NVLINK: no room for the staging buffers - the host path stays\n");
+    }
+
     bool load(const Options& opt, std::string& err) {
         o = opt;
         const double t0 = now_ms();
@@ -4580,6 +4642,7 @@ struct Model::Impl {
         if (o.verbose) std::fprintf(stderr, "ds4: loaded in %.1f s\n%s", (now_ms() - t0) / 1000.0, describe().c_str());
         reset();
         blas_warm_start();
+        nvlink_place();
         return true;
     }
 
@@ -16491,6 +16554,10 @@ struct Model::Impl {
             return;
         }
 #endif
+        if (nv_ar.on && ab.nm == 2) {   // DS4_AR_NVLINK: the copy engines over NVLink, a piece at a time
+            (void) allreduce_nvlink(buf, n, nv_ar, mi, ++c.arb_seq, s);
+            return;
+        }
         HostReducer* hr = groups[(size_t) d.grp].hred.get();
         if (dma && hr != nullptr) {   // (the lead submits the sum before its members' copies come)
             const unsigned seq = ++c.arb_seq;

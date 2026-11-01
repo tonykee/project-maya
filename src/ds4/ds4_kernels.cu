@@ -4493,6 +4493,19 @@ void set_flag(unsigned* flag, unsigned v, cudaStream_t s) {
 void tab_set(const unsigned long long* pairs, int n, cudaStream_t s) {
     if (n > 0) pdl_launch(tab_set_kernel, cdiv(n, 128), 128, 0, s, pairs, n);
 }
+// DS4_AR_NVLINK's sum: AR2's arithmetic - member 0's value plus member 1's, in that order, F32 (bit for bit with
+// ar2_kernel's exact mode); `own` is this member's piece, `recv` the peer's, pulled here by the copy engine.
+__global__ void nv_sum_kernel(float4* __restrict__ x, const float4* __restrict__ own,
+                              const float4* __restrict__ recv, int n4, int mi) {
+    pdl_wait();
+    const int q = blockIdx.x * blockDim.x + threadIdx.x;
+    if (q >= n4) return;
+    const float4 a = mi == 0 ? own[q] : recv[q];
+    const float4 b = mi == 0 ? recv[q] : own[q];
+    x[q] = make_float4(__fadd_rn(a.x, b.x), __fadd_rn(a.y, b.y), __fadd_rn(a.z, b.z), __fadd_rn(a.w, b.w));
+    pdl_trigger();
+}
+
 void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned* cnt, cudaStream_t s) {
     const int slot = (int) (seq % (unsigned) a.slots);
     if (a.nm == 2 && a.ar2 > 0 && a.pflags != nullptr) {   // (DS4_AR2: the put and the sums in one pipelined launch)
@@ -4806,7 +4819,8 @@ using WaitValue32 = CUresult (*)(CUstream, CUdeviceptr, cuuint32_t, unsigned int
 WaitValue32 ar_wait_fn() {
     static const WaitValue32 f = []() -> WaitValue32 {
         const char* e = std::getenv("DS4_AR_BACK_DMA");   // (opt-in, 1: a 5+ member group we have not run yet)
-        if (e == nullptr || std::atoi(e) == 0) return nullptr;
+        const char* nv = std::getenv("DS4_AR_NVLINK_DRVWAIT");
+        if ((e == nullptr || std::atoi(e) == 0) && (nv == nullptr || std::atoi(nv) == 0)) return nullptr;
 #if CUDART_VERSION >= 12050
         void* fp = nullptr;
         cudaDriverEntryPointQueryResult q{};
@@ -4827,6 +4841,75 @@ WaitValue32 ar_wait_fn() {
 // piece's flag and the piece is DMA'd into this member's own FP16 rows (out by then: the host sums a piece only once
 // every member's is in), then converted - where the zero-copy kernel read it at half the link's speed beside the expert
 // ring's copies (76 MB: 20.5 ms against 11.5, an RTX 5060 Ti on PCIe 3.0 x8) and spun on the flag on the GPU
+// DS4_AR_NVLINK: each piece of this member's partial goes into its own staging buffer, the peer's piece is pulled
+// here by cudaMemcpyPeerAsync (the copy engines over NVLink: 46 GB/s against the host round trip's 6.6 on 2x2080Ti),
+// and the sum is the local nv_sum_kernel.  Two slots and per-piece progress words keep the pipeline safe: a member
+// waits for the peer's "my piece is ready" before the pull, and for the peer's "I have read yours" before it
+// overwrites its own with the next piece.  The wait kernels spin on the host-mapped words; no driver entry point.
+bool allreduce_nvlink(float* x, int n, const NvArState& st, int mi, unsigned seq, cudaStream_t s) {
+    if (!st.on || n <= 0 || (n & 3) != 0) return false;
+    static int nv_trace_n = 0;
+    const bool trace = std::getenv("DS4_AR_NVLINK_TRACE") != nullptr && nv_trace_n++ < 8;
+    const bool nopdl = [] {
+        const char* e = std::getenv("DS4_AR_NVLINK_NOPDL");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    const bool drv = [] {
+        const char* e = std::getenv("DS4_AR_NVLINK_DRVWAIT");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    const bool nowait = [] {   // diagnostic: skip the cross-member waits (the copies may read stale data)
+        const char* e = std::getenv("DS4_AR_NVLINK_NOWAIT");
+        return e != nullptr && std::atoi(e) != 0;
+    }();
+    const WaitValue32 waitfn = drv ? ar_wait_fn() : nullptr;
+    if (drv && waitfn == nullptr) return false;
+    const int slot = (int) (seq % (unsigned) st.slots), peer = 1 - mi;
+    if (trace) std::fprintf(stderr, "nv_ar[%d] seq=%u n=%d slot=%d enter (nopdl=%d drv=%d)\n", mi, seq, n, slot,
+                            (int) nopdl, (int) drv);
+    const int stage = (int) st.stage;
+    const unsigned pmax = (unsigned) st.pmax;
+    auto wait_flag = [&](unsigned* f, unsigned v) -> bool {
+        if (nowait) return true;
+        if (drv) return waitfn((CUstream) s, (CUdeviceptr) f, v, CU_STREAM_WAIT_VALUE_GEQ) == CUDA_SUCCESS;
+        if (nopdl) {
+            wait_flags_kernel<<<1, 32, 0, s>>>(f, 1, 0, v);
+            return true;
+        }
+        pdl_launch(wait_flags_kernel, 1, 32, 0, s, f, 1, 0, v);
+        return true;
+    };
+    for (int off = 0; off < n; off += stage) {
+        const int len = stage < n - off ? stage : n - off;
+        const int n4 = len / 4, piece = off / stage;
+        const unsigned val = seq * pmax + (unsigned) piece + 1u;
+        unsigned* rdy_mine = st.flags + (((0 * 2 + mi) * st.slots + slot) * st.pmax + piece);
+        unsigned* rdy_peer = st.flags + (((0 * 2 + peer) * st.slots + slot) * st.pmax + piece);
+        unsigned* rd_mine = st.flags + (((1 * 2 + mi) * st.slots + slot) * st.pmax + piece);
+        unsigned* rd_peer = st.flags + (((1 * 2 + peer) * st.slots + slot) * st.pmax + piece);
+        if (cudaMemcpyAsync(st.own[mi][slot], x + off, (size_t) len * 4, cudaMemcpyDeviceToDevice, s) != cudaSuccess)
+            return false;
+        if (nopdl) set_flag_kernel<<<1, 1, 0, s>>>(rdy_mine, val);
+        else pdl_launch(set_flag_kernel, 1, 1, 0, s, rdy_mine, val);
+        if (!wait_flag(rdy_peer, val)) return false;
+        if (cudaMemcpyPeerAsync(st.recv[mi][slot], st.dev[mi], st.own[peer][slot], st.dev[peer], (size_t) len * 4, s) !=
+            cudaSuccess)
+            return false;
+        if (nopdl) set_flag_kernel<<<1, 1, 0, s>>>(rd_mine, val);
+        else pdl_launch(set_flag_kernel, 1, 1, 0, s, rd_mine, val);
+        const int blocks = std::max(1, std::min(1024, cdiv(n4, 256)));
+        if (nopdl) nv_sum_kernel<<<blocks, 256, 0, s>>>((float4*) (x + off), (const float4*) st.own[mi][slot],
+                                                        (const float4*) st.recv[mi][slot], n4, mi);
+        else pdl_launch(nv_sum_kernel, blocks, 256, 0, s, (float4*) (x + off), (const float4*) st.own[mi][slot],
+                        (const float4*) st.recv[mi][slot], n4, mi);
+        if (!wait_flag(rd_peer, val)) return false;
+        if (trace && piece == 0)
+            std::fprintf(stderr, "nv_ar[%d] p0 ready/copy/sum/ack enqueued\n", mi);
+    }
+    if (trace) std::fprintf(stderr, "nv_ar[%d] seq=%u done enqueueing\n", mi, seq);
+    return true;
+}
+
 void allreduce_host(float* x, int n, const ArGroup& a, const HostReducer& hr, int mi, unsigned seq, void* scratch,
                     cudaStream_t s, const ArAux& aux) {
     const int slot = (int) (seq % (unsigned) a.slots), nm = a.nm, n4 = n / 4, NP = ar_host_pieces(), P4 = cdiv(n4, NP);

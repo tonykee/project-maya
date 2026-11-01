@@ -540,6 +540,20 @@ struct ArAux {
     cudaStream_t s2 = nullptr;
     cudaEvent_t ev[1 + kArPieces] = {};
 };
+/// DS4_AR_NVLINK: a group of two's partials exchanged by the copy engines over NVLink (cudaMemcpyPeerAsync), a
+/// piece at a time, then summed locally - the kernel-load peer path needs a BAR1 the buffers fit in (ReBAR); a
+/// 256 MB BAR1 takes the copy engines' peer access but not the kernels' loads.  The sums are AR2's: member 0's
+/// value plus member 1's, in that order, F32.
+struct NvArState {
+    bool on = false;
+    int dev[2] = {-1, -1};
+    float* own[2][2] = {};       // [member][slot]: this member's partial, a piece
+    float* recv[2][2] = {};      // [member][slot]: the peer's piece, pulled here
+    unsigned* flags = nullptr;   // [ready/read][member][slot][piece]: host-mapped progress words
+    size_t stage = 0;            // floats a piece
+    int slots = 2, pmax = 0;
+};
+bool allreduce_nvlink(float* x, int n, const NvArState& st, int mi, unsigned seq, cudaStream_t s);
 void allreduce_dma(float* x, int n, const ArGroup& a, int mi, unsigned seq, void* scratch, cudaStream_t s,
                    const ArAux* aux = nullptr);
 /// A chunk's all-reduce summed by the host: each member's FP16 partial out on aux's stream (the D2H engine) in
