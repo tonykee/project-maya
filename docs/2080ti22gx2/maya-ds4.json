@@ -12,7 +12,7 @@
   "--mmap-experts",
   "off",
   "--experts",
-  "4",
+  "5",
   "--reserve-mib",
   "300",
   "--prefill-chunk",
@@ -27,7 +27,8 @@
  ],
  "sampling": {
   "temperature": 1.0,
-  "top_p": 1.0
+  "top_p": 0.95,
+  "top_k": 20
  },
  "reasoning_effort": "high",
  "lib_dirs": [
