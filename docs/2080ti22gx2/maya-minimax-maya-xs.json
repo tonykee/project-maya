@@ -1,0 +1,63 @@
+{
+ "exe": "/mnt/kioxia/maya/build/maya-mm3",
+ "args": [
+  "--pack",
+  "/mnt/kioxia/Maya-data/models/MiniMax-M3.1-Flash-Maya-XS/maya-mm3",
+  "--max-context",
+  "131072",
+  "--profile",
+  "/mnt/kioxia/maya/data/expert-profile-mm3.bin",
+  "--kv-streaming",
+  "on",
+  "--vision",
+  "on",
+  "--dspark",
+  "on",
+  "--chunk",
+  "8192"
+ ],
+ "cwd": "/mnt/kioxia/maya",
+ "tokenizer": "/mnt/kioxia/Maya-data/models/MiniMax-M3.1-Flash-Maya-XS/maya-mm3/tokenizer",
+ "model_name": "minimax-m3.1-flash",
+ "gpu": [
+  0,
+  1
+ ],
+ "sampling": {
+  "temperature": 1.0,
+  "top_p": 0.95
+ },
+ "reasoning_effort": "auto",
+ "lib_dirs": [
+  "/usr/local/cuda-12.8/lib64",
+  "/usr/local/cuda-12.8/targets/x86_64-linux/lib"
+ ],
+ "port": 8000,
+ "log": "/mnt/kioxia/maya/maya-minimax-maya-xs.log",
+ "installer": {
+  "family": "minimax",
+  "models_dir": "/mnt/kioxia/Maya-data/models",
+  "quant": "MiniMax-M3.1-Flash-Maya-XS",
+  "mm3_quant": "gguf-xs",
+  "model_dir": "/mnt/kioxia/Maya-data/models/MiniMax-M3.1-Flash-Maya-XS",
+  "written": "2026-10-31 15:55",
+  "prefill_calibration": {
+   "date": "2026-10-31 16:04",
+   "version": "1.1.42",
+   "chunk": 1024,
+   "gemm": "blas",
+   "tok_s": 72.4,
+   "default_tok_s": 72.4,
+   "tokens": 4096,
+   "file": "/mnt/kioxia/Maya-data/models/MiniMax-M3.1-Flash-Maya-XS/maya-mm3/prefill-tune.txt"
+  },
+  "speed_calibration": {
+   "date": "2026-10-31 16:04",
+   "version": "1.1.42",
+   "skipped": "chosen",
+   "kept": "dspark"
+  }
+ },
+ "host": "0.0.0.0",
+ "api_key": "CHANGE_ME"
+}

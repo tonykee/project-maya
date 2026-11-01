@@ -1,0 +1,76 @@
+{
+ "exe": "/mnt/kioxia/maya/build/maya",
+ "args": [
+  "--glm-pack",
+  "/mnt/kioxia/Maya-data/models/Maya-S24/pack",
+  "--max-context",
+  "262144",
+  "--expert-cache",
+  "auto",
+  "--prefill",
+  "auto",
+  "--kv-streaming",
+  "on",
+  "--expert-profile",
+  "/mnt/kioxia/maya/data/expert-profile-glm.bin",
+  "--kv",
+  "int8",
+  "--expert-cache-per-layer",
+  "--expert-profile-save",
+  "/mnt/kioxia/maya/learned-glm.bin"
+ ],
+ "cwd": "/mnt/kioxia/maya",
+ "tokenizer": "/mnt/kioxia/Maya-data/models/Maya-S24/pack/tokenizer",
+ "model_name": "glm-5.3-flash",
+ "gpu": [
+  0,
+  1
+ ],
+ "sampling": {
+  "temperature": 1.0,
+  "top_p": 0.95
+ },
+ "reasoning_effort": "high",
+ "lib_dirs": [
+  "/usr/local/cuda-12.8/lib64",
+  "/usr/local/cuda-12.8/targets/x86_64-linux/lib"
+ ],
+ "port": 8000,
+ "host": "0.0.0.0",
+ "api_key": "CHANGE_ME",
+ "vision": {
+  "exe": "/mnt/kioxia/maya/build-vision/bin/maya-vision",
+  "mmproj": "/mnt/kioxia/Maya-data/models/Maya-S24/vision/mmproj-GLM-5.3-Flash-F16.gguf",
+  "model": "/mnt/kioxia/Maya-data/models/Maya-S24/vision/GLM-5.3-Flash-vocab.gguf",
+  "gpu": true
+ },
+ "log": "/mnt/kioxia/maya/maya-maya-s24.log",
+ "installer": {
+  "models_dir": "/mnt/kioxia/Maya-data/models",
+  "quant": "Maya-S24",
+  "gguf": null,
+  "gguf_dir": null,
+  "draft": "mtp",
+  "written": "2026-10-30 10:13",
+  "tuned_on": {
+   "driver": "595.91.07",
+   "pci": "00000000:27:00.0,00000000:28:00.0",
+   "p2p": {
+    "0-1": "OK"
+   }
+  }
+ },
+ "env": {
+  "MAYA_GLM_DUAL_PREFILL": "1",
+  "MAYA_GLM_CPU_SHARED": "1",
+  "MAYA_GLM_PCIE_SHARE": "0.25",
+  "MAYA_GLM_USAGE": "/mnt/kioxia/maya/expert-usage.txt",
+  "MAYA_GLM_SPEC_CANCEL": "1",
+  "MAYA_GLM_SPEC_SAMPLE": "1",
+  "MAYA_GLM_MISS_SKIP_W": "0.12",
+  "MAYA_GLM_MISS_SKIP_FROM": "23",
+  "MAYA_GLM_SLOT_KEEP": "1",
+  "MAYA_GLM_SLOT_DAYS": "7"
+ },
+ "loop_guard": true
+}
