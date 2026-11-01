@@ -4,9 +4,9 @@
 
 ## 基线（v1.1.46，2026-11-01）
 
-| 模型 | Decode（256 tok 中位） | Prefill 1.6K | Prefill 6.5K | Prefill 13K | 备注 |
+| 模型 | Decode（256 tok 中位） | Prefill ~1.7K | Prefill ~5.8K | Prefill ~13.5K | 备注 |
 |---|---:|---:|---:|---:|---|
-| GLM-5.3 Maya-S24 | 33.8 | 330 | 489 | 641 | 256K，MISS_SKIP 0.12，DEFER_CPU=2（#722） |
+| GLM-5.3 Maya-S24 | 33.8 | 300 | 477 | 608 | 256K，MISS_SKIP 0.12，DEFER_CPU=2（#722） |
 | DeepSeek Maya-XS | 41.6 | 235 | 504 | 665 | 256K，experts 4，chunk 8192，IQ1_S 向量化（#695） |
 | MiniMax Maya-XS | 10.1 | 99 | 135 | 143 | 131K，chunk 8192 |
 
