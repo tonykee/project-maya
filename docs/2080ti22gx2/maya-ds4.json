@@ -12,7 +12,7 @@
   "--mmap-experts",
   "off",
   "--experts",
-  "5",
+  "4",
   "--reserve-mib",
   "300",
   "--prefill-chunk",
