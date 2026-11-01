@@ -7,7 +7,7 @@
 | 模型 | Decode（256 tok 中位） | Prefill ~1.7K | Prefill ~5.8K | Prefill ~13.5K | 备注 |
 |---|---:|---:|---:|---:|---|
 | GLM-5.3 Maya-S24 | 33.8 | 300 | 477 | 608 | 256K，MISS_SKIP 0.12，DEFER_CPU=2（#722） |
-| DeepSeek Maya-XS | 41.6 | 235 | 504 | 665 | 256K，experts 4，chunk 8192，IQ1_S 向量化（#695） |
+| DeepSeek Maya-XS | 39.6 | 247 | 544 | 730 | 256K，experts 4，chunk 8192，IQ1_S 向量化（#695），AR2=2 |
 | MiniMax Maya-XS | 10.1 | 99 | 135 | 143 | 131K，chunk 8192 |
 
 ## 验证记录
@@ -18,6 +18,7 @@
 | 2026-11-01 | PR #722 | GLM `MAYA_GLM_DEFER_CPU=2` | **33.8 / 608** | — | ✅ +8.0%，prefill 无退化 |
 | 2026-11-01 | PR #695 | CPU lane IQ1_S 向量化（逐位一致） | — | **41.6 / 665** | ✅ +34%，prefill 略升 |
 | 2026-11-01 | #722+#695 | 合并版复测（冷/热） | — | 36.8 → **41.2** / 660 | ✅ 与单独 #695 一致 |
+| 2026-11-01 | `DS4_AR2=2` | prompt all-reduce FP16 线上 | — | **39.6 / 730** | ✅ +10% prefill；10 题 9/10 与 AR2=1 相同 |
 
 ## 测法
 
