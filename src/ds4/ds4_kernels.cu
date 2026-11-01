@@ -4931,6 +4931,10 @@ bool allreduce_nvlink_ring(float* x, int n, NvArState& st, int mi, unsigned seq,
         return false;
     const int stage = (int) st.stage;
     const bool leader = (mi == 0);
+    const bool sync_each = [] {   // the pieces share one staging set: serialize them (the pipelined version races)
+        const char* e = std::getenv("DS4_AR_NVLINK_RING_SYNC");
+        return e == nullptr || std::atoi(e) != 0;
+    }();
     static int ring_trace_n = 0;
     const bool trace = std::getenv("DS4_AR_NVLINK_TRACE") != nullptr && ring_trace_n++ < 4;
     if (trace) std::fprintf(stderr, "nv_ring[%d] seq=%u n=%d stage=%d %s\n", mi, seq, n, stage,
@@ -4962,6 +4966,7 @@ bool allreduce_nvlink_ring(float* x, int n, NvArState& st, int mi, unsigned seq,
             set_flag_kernel<<<1, 1, 0, s>>>(st.flags + 1, dv);
             wait_change_kernel<<<1, 32, 0, s>>>(st.flags + 2, st.last_consumed);
         }
+        if (sync_each && cudaStreamSynchronize(s) != cudaSuccess) return false;
     }
     if (trace) std::fprintf(stderr, "nv_ring[%d] seq=%u done enqueueing\n", mi, seq);
     return true;
