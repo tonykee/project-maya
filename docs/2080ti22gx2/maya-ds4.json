@@ -60,5 +60,6 @@
   "MAYA_DS4_AR2": "1",
   "DS4_TP_SHARES": "4,5",
   "MAYA_DS4_SLOT_KEEP": "1"
- }
+ },
+ "thinking_budget": 4096
 }
