@@ -70,7 +70,8 @@
   "MAYA_GLM_MISS_SKIP_W": "0.12",
   "MAYA_GLM_MISS_SKIP_FROM": "23",
   "MAYA_GLM_SLOT_KEEP": "1",
-  "MAYA_GLM_SLOT_DAYS": "7"
+  "MAYA_GLM_SLOT_DAYS": "7",
+  "MAYA_GLM_DEFER_CPU": "2"
  },
  "loop_guard": true
 }

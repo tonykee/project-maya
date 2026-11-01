@@ -6,15 +6,17 @@
 
 | 模型 | Decode（256 tok 中位） | Prefill 1.6K | Prefill 6.5K | Prefill 13K | 备注 |
 |---|---:|---:|---:|---:|---|
-| GLM-5.3 Maya-S24 | 32.1 | 330 | 489 | 641 | 256K，MISS_SKIP 0.12 |
-| DeepSeek Maya-XS | 30.3（峰值 34.2） | 203 | 483 | 641 | 256K，experts 4，chunk 8192 |
+| GLM-5.3 Maya-S24 | 33.8 | 330 | 489 | 641 | 256K，MISS_SKIP 0.12，DEFER_CPU=2（#722） |
+| DeepSeek Maya-XS | 41.6 | 235 | 504 | 665 | 256K，experts 4，chunk 8192，IQ1_S 向量化（#695） |
 | MiniMax Maya-XS | 10.1 | 99 | 135 | 143 | 131K，chunk 8192 |
 
 ## 验证记录
 
 | 日期 | 上游提交 | 内容 | GLM dec/pre13K | DS dec/pre13K | 结论 |
 |---|---|---|---:|---:|---|
-| 2026-11-01 | v1.1.46 | 基线 | 32.1 / 641 | 30.3 / 641 | 采用 |
+| 2026-11-01 | v1.1.46 | 基线（无新 PR） | 31.3 / 602 | 31.0 / 652 | 采用 |
+| 2026-11-01 | PR #722 | GLM `MAYA_GLM_DEFER_CPU=2` | **33.8 / 608** | — | ✅ +8.0%，prefill 无退化 |
+| 2026-11-01 | PR #695 | CPU lane IQ1_S 向量化（逐位一致） | — | **41.6 / 665** | ✅ +34%，prefill 略升 |
 
 ## 测法
 
@@ -24,7 +26,8 @@ cd /mnt/kioxia/maya
 ./.venv/bin/python docs/2080ti22gx2/bench_ds4.py "标签"
 
 # GLM：先 ./stop_ds4.sh，再 ./start_glm.sh，然后
-./.venv/bin/python docs/2080ti22gx2/bench_ab.py "标签"
+./.venv/bin/python docs/2080ti22gx2/decode_bench.py "标签"   # decode（256 tok，才有意义）
+./.venv/bin/python docs/2080ti22gx2/bench_ab.py "标签"       # prefill（只生成 4-8 tok，decode 列别用）
 
 # MiniMax：./stop_ds4.sh && ./start_mm3.sh
 ./.venv/bin/python docs/2080ti22gx2/bench_mm3.py "标签"
