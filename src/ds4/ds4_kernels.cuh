@@ -552,8 +552,12 @@ struct NvArState {
     unsigned* flags = nullptr;   // [ready/read][member][slot][piece]: host-mapped progress words
     size_t stage = 0;            // floats a piece
     int slots = 2, pmax = 0;
+    // DS4_AR_NVLINK_RING: one direction at a time; ready (leader), done (follower), consumed (leader)
+    unsigned *last_ready = nullptr, *last_done = nullptr, *last_consumed = nullptr;
+    unsigned ring_ready = 0, ring_done = 0, ring_consumed = 0;
 };
-bool allreduce_nvlink(float* x, int n, const NvArState& st, int mi, unsigned seq, cudaStream_t s);
+bool allreduce_nvlink(float* x, int n, NvArState& st, int mi, unsigned seq, cudaStream_t s);
+bool allreduce_nvlink_ring(float* x, int n, NvArState& st, int mi, unsigned seq, cudaStream_t s);
 void allreduce_dma(float* x, int n, const ArGroup& a, int mi, unsigned seq, void* scratch, cudaStream_t s,
                    const ArAux* aux = nullptr);
 /// A chunk's all-reduce summed by the host: each member's FP16 partial out on aux's stream (the D2H engine) in

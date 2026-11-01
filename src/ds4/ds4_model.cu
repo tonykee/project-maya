@@ -3227,11 +3227,25 @@ struct Model::Impl {
                                 cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess) {
                 std::memset(flags, 0, sizeof(unsigned) * 2 * 2 * st.slots * st.pmax);
                 st.flags = flags;
-                st.on = true;
-                nv_ar = st;
-                std::fprintf(stderr, "ds4: DS4_AR_NVLINK: NVLink copy-engine all-reduce, %.0f MB of staging a member, "
-                                     "%zu KB a piece\n", st.stage * 4.0 * st.slots * 2 / 1e6, st.stage * 4 >> 10);
-                return;
+                bool last_ok = true;
+                (void) cudaSetDevice(st.dev[1]);
+                if (cudaMalloc((void**) &st.last_ready, 4) != cudaSuccess) last_ok = false;
+                if (last_ok && cudaMalloc((void**) &st.last_consumed, 4) != cudaSuccess) last_ok = false;
+                if (last_ok) {
+                    (void) cudaMemset(st.last_ready, 0, 4);
+                    (void) cudaMemset(st.last_consumed, 0, 4);
+                }
+                (void) cudaSetDevice(st.dev[0]);
+                if (last_ok && cudaMalloc((void**) &st.last_done, 4) != cudaSuccess) last_ok = false;
+                if (last_ok) (void) cudaMemset(st.last_done, 0, 4);
+                if (last_ok) {
+                    st.on = true;
+                    nv_ar = st;
+                    std::fprintf(stderr, "ds4: DS4_AR_NVLINK: NVLink copy-engine all-reduce, %.0f MB of staging a member, "
+                                         "%zu KB a piece\n", st.stage * 4.0 * st.slots * 2 / 1e6, st.stage * 4 >> 10);
+                    return;
+                }
+                (void) cudaGetLastError();
             }
             (void) cudaGetLastError();
             for (int m = 0; m < 2; ++m)
@@ -3248,6 +3262,11 @@ struct Model::Impl {
                     }
                 }
             if (flags != nullptr) (void) cudaFreeHost(flags);
+            (void) cudaSetDevice(st.dev[1]);
+            if (st.last_ready != nullptr) { (void) cudaFree(st.last_ready); st.last_ready = nullptr; }
+            if (st.last_consumed != nullptr) { (void) cudaFree(st.last_consumed); st.last_consumed = nullptr; }
+            (void) cudaSetDevice(st.dev[0]);
+            if (st.last_done != nullptr) { (void) cudaFree(st.last_done); st.last_done = nullptr; }
         }
         std::fprintf(stderr, "ds4: DS4_AR_NVLINK: no room for the staging buffers - the host path stays\n");
     }
@@ -16555,7 +16574,13 @@ struct Model::Impl {
         }
 #endif
         if (nv_ar.on && ab.nm == 2) {   // DS4_AR_NVLINK: the copy engines over NVLink, a piece at a time
-            (void) allreduce_nvlink(buf, n, nv_ar, mi, ++c.arb_seq, s);
+            static const bool ring = [] {
+                const char* e = std::getenv("DS4_AR_NVLINK_RING");
+                return e != nullptr && std::atoi(e) != 0;
+            }();
+            const unsigned seq = ++c.arb_seq;
+            if (ring) (void) allreduce_nvlink_ring(buf, n, nv_ar, mi, seq, s);
+            else (void) allreduce_nvlink(buf, n, nv_ar, mi, seq, s);
             return;
         }
         HostReducer* hr = groups[(size_t) d.grp].hred.get();

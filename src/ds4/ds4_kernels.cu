@@ -4506,6 +4506,17 @@ __global__ void nv_sum_kernel(float4* __restrict__ x, const float4* __restrict__
     pdl_trigger();
 }
 
+// DS4_AR_NVLINK_RING's wait: the flag is host-mapped and the last value seen is in device memory, so a waiter waits
+// for a change without knowing the writer's sequence (the members' seqs need not match).
+__global__ void wait_change_kernel(const unsigned* flag, unsigned* last) {
+    if (threadIdx.x == 0) {
+        const unsigned l = *last;
+        while (*(volatile const unsigned*) flag == l) { }
+        *last = *(volatile const unsigned*) flag;
+    }
+    __threadfence_system();
+}
+
 void allreduce(float* x, int n, const ArGroup& a, int mi, unsigned seq, unsigned* cnt, cudaStream_t s) {
     const int slot = (int) (seq % (unsigned) a.slots);
     if (a.nm == 2 && a.ar2 > 0 && a.pflags != nullptr) {   // (DS4_AR2: the put and the sums in one pipelined launch)
@@ -4846,7 +4857,7 @@ WaitValue32 ar_wait_fn() {
 // and the sum is the local nv_sum_kernel.  Two slots and per-piece progress words keep the pipeline safe: a member
 // waits for the peer's "my piece is ready" before the pull, and for the peer's "I have read yours" before it
 // overwrites its own with the next piece.  The wait kernels spin on the host-mapped words; no driver entry point.
-bool allreduce_nvlink(float* x, int n, const NvArState& st, int mi, unsigned seq, cudaStream_t s) {
+bool allreduce_nvlink(float* x, int n, NvArState& st, int mi, unsigned seq, cudaStream_t s) {
     if (!st.on || n <= 0 || (n & 3) != 0) return false;
     static int nv_trace_n = 0;
     const bool trace = std::getenv("DS4_AR_NVLINK_TRACE") != nullptr && nv_trace_n++ < 8;
@@ -4907,6 +4918,52 @@ bool allreduce_nvlink(float* x, int n, const NvArState& st, int mi, unsigned seq
             std::fprintf(stderr, "nv_ar[%d] p0 ready/copy/sum/ack enqueued\n", mi);
     }
     if (trace) std::fprintf(stderr, "nv_ar[%d] seq=%u done enqueueing\n", mi, seq);
+    return true;
+}
+
+// DS4_AR_NVLINK_RING: the serialized ring.  Leader (mi 0): its partial into own[0][0], ready; the follower pulls it
+// into recv[1][0], sums x = leader + follower, copies the sum into own[1][0], done; the leader pulls the sum into x,
+// then consumed.  One direction at a time; the progress words change and the waiters wait for a change (last in
+// device memory), so the members' sequence numbers need not match.
+bool allreduce_nvlink_ring(float* x, int n, NvArState& st, int mi, unsigned seq, cudaStream_t s) {
+    if (!st.on || n <= 0 || (n & 3) != 0 || st.flags == nullptr || st.last_ready == nullptr ||
+        st.last_done == nullptr || st.last_consumed == nullptr)
+        return false;
+    const int stage = (int) st.stage;
+    const bool leader = (mi == 0);
+    static int ring_trace_n = 0;
+    const bool trace = std::getenv("DS4_AR_NVLINK_TRACE") != nullptr && ring_trace_n++ < 4;
+    if (trace) std::fprintf(stderr, "nv_ring[%d] seq=%u n=%d stage=%d %s\n", mi, seq, n, stage,
+                            leader ? "leader" : "follower");
+    for (int off = 0; off < n; off += stage) {
+        const int len = stage < n - off ? stage : n - off;
+        const int n4 = len / 4;
+        if (leader) {
+            if (cudaMemcpyAsync(st.own[0][0], x + off, (size_t) len * 4, cudaMemcpyDeviceToDevice, s) != cudaSuccess)
+                return false;
+            const unsigned rv = ++st.ring_ready;
+            set_flag_kernel<<<1, 1, 0, s>>>(st.flags + 0, rv);
+            wait_change_kernel<<<1, 32, 0, s>>>(st.flags + 1, st.last_done);
+            if (cudaMemcpyPeerAsync(x + off, st.dev[0], st.own[1][0], st.dev[1], (size_t) len * 4, s) != cudaSuccess)
+                return false;
+            const unsigned cv = ++st.ring_consumed;
+            set_flag_kernel<<<1, 1, 0, s>>>(st.flags + 2, cv);
+        } else {
+            wait_change_kernel<<<1, 32, 0, s>>>(st.flags + 0, st.last_ready);
+            if (cudaMemcpyPeerAsync(st.recv[1][0], st.dev[1], st.own[0][0], st.dev[0], (size_t) len * 4, s) !=
+                cudaSuccess)
+                return false;
+            const int blocks = std::max(1, std::min(1024, cdiv(n4, 256)));
+            nv_sum_kernel<<<blocks, 256, 0, s>>>((float4*) (x + off), (const float4*) (x + off),
+                                                (const float4*) st.recv[1][0], n4, 1);
+            if (cudaMemcpyAsync(st.own[1][0], x + off, (size_t) len * 4, cudaMemcpyDeviceToDevice, s) != cudaSuccess)
+                return false;
+            const unsigned dv = ++st.ring_done;
+            set_flag_kernel<<<1, 1, 0, s>>>(st.flags + 1, dv);
+            wait_change_kernel<<<1, 32, 0, s>>>(st.flags + 2, st.last_consumed);
+        }
+    }
+    if (trace) std::fprintf(stderr, "nv_ring[%d] seq=%u done enqueueing\n", mi, seq);
     return true;
 }
 
