@@ -75,5 +75,5 @@
   "MAYA_GLM_DEFER_CPU": "2"
  },
  "loop_guard": true,
- "thinking_budget": 2048
+ "thinking_budget": 4096
 }
