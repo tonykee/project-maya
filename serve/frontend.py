@@ -755,13 +755,23 @@ class DsmlRewriter:
     (`<tool_call>N<arg_key>K</arg_key><arg_value>V</arg_value>...</tool_call>`) for OutputParser.  A tag split across
     deltas is held until it is whole; the whitespace between the tags of a calls block is dropped.  A value is passed
     as written; string="true" is JSON-quoted so the parser preserves the model's
-    string-vs-JSON flag independently of the tool's schema."""
+    string-vs-JSON flag independently of the tool's schema.  A call written without the DSML tokens (a long
+    context's plain-XML fallback: bare `<parameter name=...>` and `</arg_value>` / `</tool_call>`) is held from its
+    first parameter and rewritten at the end, if it is one call (see _legacy_call)."""
 
-    def __init__(self):
+    # The parameter tag with its special tokens lost, as a long-context model writes it:
+    # `<parameter name="command" string="true">...` with `</arg_value>` / `</tool_call>` closers.
+    BARE = "<parameter"
+    _BARE_PARAM = re.compile(r'<\s*parameter\s+([^>]*)>(.*?)</\s*(?:parameter|arg_value|tool_call|invoke)\s*>', re.S)
+
+    def __init__(self, tools=None):
         self.buf = ""
+        self.tools = tools or []
         self.in_calls = self.in_param = False
         self.parameter_text = ""
         self.parameter_string = False
+        self.bare = ""               # a call written without the DSML tokens: held to the end (see _legacy_call)
+        self.wrap = ""               # a literal `<tool_call>` held to see what follows (see _wrap_ready)
 
     @staticmethod
     def _esc(s: str) -> str:
@@ -772,6 +782,14 @@ class DsmlRewriter:
     CLOSER = "</" + DSML + " parameter>"    # the only structural token inside a value
 
     def feed(self, text: str) -> str:
+        if self.bare:
+            self.bare += text
+            return ""
+        if self.wrap:
+            self.wrap += text
+            text = self._wrap_ready()
+            if text is None:
+                return ""
         self.buf += text
         out = []
         while self.buf:
@@ -802,6 +820,19 @@ class DsmlRewriter:
             if i > 0:
                 out.append(self._plain(self.buf[:i]))
                 self.buf = self.buf[i:]
+            # A parameter tag without the DSML tokens: hold it (and everything after it) for _legacy_call.  A
+            # partial tag is held until the next delta tells whether it is one.
+            if len(self.buf) > len(self.BARE) and self.buf.startswith(self.BARE) \
+                    and self.buf[len(self.BARE)] in " \t\r\n>":
+                self.bare, self.buf = self.buf, ""
+                break
+            if len(self.buf) <= len(self.BARE) and self.BARE.startswith(self.buf):
+                break
+            # A literal `<tool_call>`: the DSML template never writes one, so it may be a malformed call's wrapper.
+            if self.buf.startswith("<tool_call>") or \
+                    (len(self.buf) < len("<tool_call>") and "<tool_call>".startswith(self.buf)):
+                self.wrap, self.buf = self.buf, ""
+                break
             opener = next((o for o in ("<" + DSML, "</" + DSML) if self.buf.startswith(o)), None)
             if opener is None:
                 if any(o.startswith(self.buf) for o in ("<" + DSML, "</" + DSML)):
@@ -817,8 +848,113 @@ class DsmlRewriter:
         return "".join(out)
 
     def finish(self) -> str:
+        if self.bare:
+            bare, self.bare = self.bare, ""
+            call = self._legacy_call(bare)
+            return self._plain(bare) if call is None else call
+        if self.wrap:
+            wrap, self.wrap = self.wrap, ""
+            call = self._legacy_call(wrap)
+            return self._plain(wrap) if call is None else call
         rest, self.buf = self.buf, ""
         return self._plain(rest)
+
+    def take_held(self) -> str:
+        """Text held for a malformed call, taken back as it was written (the thinking's own prose, at its end)."""
+        held, self.bare, self.wrap = self.bare + self.wrap, "", ""
+        return held
+
+    def _wrap_ready(self) -> str | None:
+        """The held `<tool_call>`: None while a parameter tag without the DSML tokens may follow (then the whole
+        text is _legacy_call's); otherwise the text to pass on as it was written (a GLM/Qwen call, or prose)."""
+        s = self.wrap
+        m = re.match(r'^<\s*tool_call\s*>\s*', s)
+        if m is None:
+            if "<tool_call>".startswith(s.lstrip()):
+                return None
+            self.wrap = ""
+            return s
+        after = s[m.end():]
+        if self.BARE.startswith(after):
+            return None                         # the parameter tag is still arriving
+        if after.startswith(self.BARE) and len(after) > len(self.BARE) \
+                and after[len(self.BARE)] in " \t\r\n>":
+            self.bare, self.wrap = s, ""
+            return ""
+        self.wrap = ""
+        return s
+
+    def _legacy_call(self, text: str) -> str | None:
+        """A call written with the DSML special tokens lost (a long context's fallback to plain XML):
+        `<parameter name="K" string="true">V</arg_value>` and a `</tool_call>`, with or without the wrapper's
+        name.  Returns it in GLM's form for OutputParser, or None when the text is not one call (it stays the
+        answer's).  A call without a name is given its tool when the parameters identify one of the request's."""
+        rest = text.strip()
+        if not rest:
+            return None
+        name = ""
+        m = re.match(r'<\s*function\s*=\s*([^>\s]+)\s*>\s*', rest)
+        if m:
+            name, rest = m.group(1), rest[m.end():]
+        else:
+            m = re.match(r'<\s*(?:tool_call|invoke)\b([^>]*)>\s*', rest)
+            if m:
+                nm = re.search(r'name\s*=\s*"([^"]*)"', m.group(1))
+                name, rest = (nm.group(1) if nm else ""), rest[m.end():]
+        params, pos = [], 0
+        while True:
+            m = self._BARE_PARAM.search(rest, pos)
+            if m is None:
+                break
+            if rest[pos:m.start()].strip():
+                return None                     # text between the tags: not one call
+            attrs = dict(_DSML_ATTR.findall(m.group(1)))
+            if not attrs.get("name"):
+                return None
+            params.append((attrs["name"], attrs.get("string"), m.group(2)))
+            pos = m.end()
+        if not params:
+            return None
+        tail = re.sub(r'^(?:</\s*(?:tool_call|invoke|function)\s*>\s*)+$', '', rest[pos:].strip())
+        if tail:
+            return None                         # text after the call: not a call the model finished
+        if not name:
+            names = {p[0] for p in params}
+            matches = []
+            for tool in self.tools:
+                props = (tool.get("parameters") or {}).get("properties") or {}
+                if names <= set(props):
+                    matches.append((set(props) == names, tool.get("name") or ""))
+            exact = [n for ex, n in matches if ex and n]
+            loose = [n for _, n in matches if n]
+            if len(exact) == 1:
+                name = exact[0]
+            elif len(loose) == 1:
+                name = loose[0]
+            elif len(self.tools) == 1:
+                name = self.tools[0].get("name") or ""
+        if not name:
+            return None
+        props = next(((t.get("parameters") or {}).get("properties") or {}
+                      for t in self.tools if (t.get("name") or "") == name), {})
+        parts = []
+        for pname, sflag, value in params:
+            if sflag is None:
+                declared = (props.get(pname) or {}).get("type")
+                if declared == "string":
+                    sflag = "true"
+                elif declared:
+                    sflag = "false"
+                else:
+                    try:
+                        json.loads(value)
+                        sflag = "false"
+                    except ValueError:
+                        sflag = "true"
+            if sflag == "true":
+                value = '"' + self._esc(value) + '"'
+            parts.append(ARG_KEY + pname + ARG_KEY_END + ARG_VAL + value + ARG_VAL_END)
+        return CALL_START + name + "".join(parts) + CALL_END
 
     def _close(self) -> str:
         """The parameter's closing tag: end the value - a streamed string's closing quote (its pieces went
@@ -1086,7 +1222,7 @@ class OutputParser:
         self.token_only_end = token_only_end
         # DeepSeek-V4.1's tool calls, read as GLM's (DsmlRewriter); MiniMax-M3.1's the same way (MinimaxRewriter):
         # both send JSON values, so the parser takes them without the tools' schemas
-        self.dsml = DsmlRewriter() if dsml else MinimaxRewriter(tools) if minimax else None
+        self.dsml = DsmlRewriter(tools) if dsml else MinimaxRewriter(tools) if minimax else None
         self.buf = ""
         self._call_resume = 0        # where the CALL_END search in call state resumes (see _feed)
         self.lead = False
@@ -1330,6 +1466,10 @@ class OutputParser:
             return []
         out = [Event("reasoning", self.buf)] if self.buf else []
         self.buf = ""
+        if self.dsml is not None:
+            held = self.dsml.take_held()    # a bare parameter block was the thinking's prose, not a call
+            if held:
+                out.append(Event("reasoning", held))
         self.state, self.lead = "content", True
         self.fence, self.line, self.ticks = "", "", 0
         return out
