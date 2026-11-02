@@ -26,11 +26,14 @@
   0
  ],
  "sampling": {
-  "temperature": 0.7,
-  "top_p": 0.95,
-  "top_k": 20
+  "temperature": 0.3,
+  "top_p": 0.9,
+  "top_k": 15,
+  "min_p": 0.02,
+  "repetition_penalty": 1.05,
+  "penalty_last_n": 512
  },
- "reasoning_effort": "high",
+ "reasoning_effort": "medium",
  "lib_dirs": [
   "/usr/local/cuda-12.8/lib64",
   "/usr/local/cuda-12.8/targets/x86_64-linux/lib"
@@ -62,5 +65,5 @@
   "DS4_TP_SHARES": "4,5",
   "MAYA_DS4_SLOT_KEEP": "1"
  },
- "thinking_budget": 2048
+ "thinking_budget": 1536
 }
