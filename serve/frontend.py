@@ -746,6 +746,11 @@ def parse_tool_call(body: str, schema: dict | None = None) -> ToolCall:
 
 
 DSML = "｜DSML｜"
+# Tool calls whose arguments are dangerous when the output ends before the closing tag: held whole (no
+# tool_start/tool_args), so a cut-off call goes back as text instead of a truncated Edit.  MAYA_BUFFER_TOOLS
+# (comma-separated) adds more.  Write stays streaming by default: a whole-file Write can take minutes, and its
+# progress is what keeps the client's request alive.
+BUFFER_TOOLS = frozenset(x.strip() for x in os.environ.get("MAYA_BUFFER_TOOLS", "Edit").split(",") if x.strip())
 _DSML_ATTR = re.compile(r'(\w+)="([^"]*)"')
 
 
@@ -1288,6 +1293,13 @@ class OutputParser:
         self.sdeclared = {}
         self.glm = False             # the call is in GLM's form (NAME<arg_key>..), not Qwen's (<function=NAME>..)
         self.vend = "</parameter>"   # what ends the value being streamed
+        self.buffered = False        # an Edit/Write held whole (see BUFFER_TOOLS)
+
+    def _call_name_ready(self) -> bool:
+        """The call's name is whole in self.buf: GLM's runs to the first tag or newline, Qwen's to `>`."""
+        if self.buf.startswith(FUNC_START):
+            return ">" in self.buf
+        return "<" in self.buf or "\n" in self.buf
 
     def _start_call(self, name: str, out: list, args) -> None:
         self.scall = ToolCall(name=name, arguments={})
@@ -1559,11 +1571,16 @@ class OutputParser:
                 # the body accumulates in buf until the call closes, so searching from 0 every
                 # delta is O(body) per token.  In call state buf only grows, and a failed search over
                 # L chars rules out every start position up to L - len(CALL_END): resume there.
+                if self.stream_tools and not self.buffered and self.scall is None:
+                    if not self._call_name_ready():
+                        return out
+                    if call_name(self.buf) in BUFFER_TOOLS:
+                        self.buffered = True
                 i = self.buf.find(CALL_END, self._call_resume)
                 if i < 0:
                     self._call_resume = max(0, len(self.buf) - len(CALL_END) + 1)
                 complete = True
-                if self.stream_tools:
+                if self.stream_tools and not self.buffered:
                     if i >= 0:
                         whole, self.buf = self.buf, self.buf[:i]     # scan only the body
                         out += self._scan()
@@ -1632,6 +1649,8 @@ class OutputParser:
                 return out
             kind = {"reasoning": "reasoning", "content": "content"}.get(self.state, "content")
             text = self.buf if self.state != "call" else CALL_START + self.buf
+            if self.buffered and self.state == "call":
+                text += "\n[tool call cut off before it closed; retry with a shorter Edit]"
             out.append(Event(kind, text))
             self.buf = ""
         return out
