@@ -890,8 +890,8 @@ class DsmlRewriter:
         name.  Returns it in GLM's form for OutputParser, or None when the text is not one call (it stays the
         answer's).  A call without a name is given its tool when the parameters identify one of the request's."""
         rest = text.strip()
-        if not rest:
-            return None
+        if not rest or rest.count("</tool_call>") > 1:
+            return None                         # (more than one call: not a shape this recovery merges)
         name = ""
         m = re.match(r'<\s*function\s*=\s*([^>\s]+)\s*>\s*', rest)
         if m:

@@ -102,6 +102,13 @@ class LegacyCalls(unittest.TestCase):
         self.assertEqual(calls(events), [])
         self.assertEqual(content(events), text)
 
+    def test_two_calls_are_not_merged(self):
+        text = (BARE + "\n" +
+                '<parameter name="command" string="true">pwd</arg_value>\n</tool_call>')
+        events = run(text)
+        self.assertEqual(calls(events), [])
+        self.assertEqual(content(events), text)
+
     def test_a_parameter_tag_in_prose_is_not_a_call(self):
         text = 'The template is `<parameter name="command" string="true">`, as shown.'
         events = run(text)
