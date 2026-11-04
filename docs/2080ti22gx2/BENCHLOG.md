@@ -43,3 +43,46 @@ cd /mnt/kioxia/maya
 - **decode 或 prefill 掉 >3%** → 视为回退，不合入
 - **±3% 内** → 无变化，按需合入（修 bug 就合，纯重构可不合）
 - **提升 >3%** → 合入，并更新本文的基线表
+
+## 2026-11-04：v1.1.52 / GLM-5.3 A/B 与 Engram 包变更
+
+### GLM-5.3 Maya-S24（v1.1.52，Maya-S24）
+
+| 配置 | Decode | Prefill 1.6K / 6.6K / 13K | 结论 |
+|---|---:|---:|---|
+| baseline | 34.3 | 349.1 / 525.8 / 677.3 | — |
+| `MAYA_GLM_PREFILL_CPU_GATE=0` | 34.5 | **401.3 / 547.9 / 715.6** | ✅ 采用 |
+| `MAYA_GLM_PCIE_SHARE=0.25` | 34.5 | 同 gate0 | ➖ 中性，保留 |
+| #460 `RAM_INCLUSIVE` | **30.8** | 404.9 / 553.1 / 719.2 | ❌ decode −10.7%，revert |
+| 质量 10 题 | — | 9/10（仅词序反转失败，算术通过） | ✅ |
+
+最终 GLM 配置：`gate0 + PCIE_SHARE=0.25`，无 `RAM_INCLUSIVE`。
+
+### DeepSeek v1.1.52 A/B（Maya-XS，pack 已含 Engram）
+
+| 配置 | Decode | Prefill 1.6K / 6.6K / 13K / 53K | 结论 |
+|---|---:|---:|---|
+| v1.1.50 旧 pack（无 Engram，10:38） | 35.8 | 405.4 / 763.6 / 953.5 / **1112.0** | 旧基线 |
+| v1.1.52 A（旧 config，11:38，page cache 热） | 35.4 | 400.5 / 767.6 / 949.3 / 828.1 | 53K −25% |
+| v1.1.52 B（setup-new） | 10.6 | 372.5 / 534.0 / 361.3 / 538.8 | ❌ 不可用 |
+| v1.1.50（新 pack，冷 cache） | 17.1 | 108 / 276 / 390 / 573 | ❌ Engram 读盘 |
+| v1.1.52 A 复测（冷 cache） | 16.4 | 108 / 276 / 395 / 581 | ❌ 冷 Engram |
+| v1.1.52 + `DS4_ENGRAM_CACHE_MB=2048`（warm1） | 16.9 | **395.7 / 772.6** / 471.5 / 574.1 | 短 prompt 恢复 |
+| 同上（warm2） | 25.2 | 114 / 277 / 386 / 566 | 13K/53K 仍慢 |
+
+### 测试 2/3（v1.1.50，新 pack）
+
+| 测试 | Decode | Prefill 1.6K / 6.6K / 13K / 53K | 结论 |
+|---|---:|---:|---|
+| 2：`MAYA_DS4_SLOT_CAP=16` + `MAYA_DS4_ENGRAM_CACHE_MB=16384` | 16.4 | 108 / 275 / 390 / 577 | ❌ 变量名错误，无效果 |
+| 3：`--dspark off` | 15.8 | 108 / 277 / 389 / 575 | ❌ 无效果，保持 DSpark on |
+
+### Engram 根因与坑
+
+- 11:21 的 v1.1.52 setup 重建 pack，加入 **Engram（layers 1/14，Q6_K 表约 768MB）**；10:38 的 v1.1.50 跑的是旧 pack（无 Engram），所以 1112 tok/s。
+- Engram 行默认从模型文件读，行缓存只有 16–256MB；v2 下载把 page cache 挤掉后，v1.1.50/v1.1.52 都掉到 ~580。
+- **`DS4_ENGRAM_RAM=1` 是坑**：实际锁的是整个 80.64GB 分片文件（file 3 全锁 + file 4 43GB），直接 OOM（内核杀进程，file-rss 124.7GB）。**不要用**。
+- 可用的缓解：`DS4_ENGRAM_CACHE_MB=2048` + 启动后手动预热 Engram 表到 page cache；`DS4_ENGRAM_PREFETCH` 在 TP=2 下不生效（代码要求单 GPU）。
+- `--reserve-mib 300` 对 v1.1.50 太紧：CUDA0 只剩 78MB，64MB IQ scratch 分配失败会走慢速回退；改为 **768**（约 3% 专家槽）。
+- 多次重启 + v2 下载/一次 OOM 后，主机内存/驱动状态仍未回到 10:38 的干净水平；建议**重启**后再跑 A 基线确认 828。
+

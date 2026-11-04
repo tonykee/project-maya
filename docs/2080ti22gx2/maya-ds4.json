@@ -1,69 +1,119 @@
 {
- "exe": "/mnt/kioxia/maya/build/maya-ds4",
- "args": [
-  "--pack",
-  "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4",
-  "--max-context",
-  "262144",
-  "--tp",
-  "2",
-  "--dspark",
-  "on",
-  "--mmap-experts",
-  "off",
-  "--experts",
-  "4",
-  "--reserve-mib",
-  "300",
-  "--prefill-chunk",
-  "8192"
- ],
- "cwd": "/mnt/kioxia/maya",
- "tokenizer": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4/tokenizer",
- "model_name": "deepseek-v4.1-flash",
- "gpu": [
-  1,
-  0
- ],
- "sampling": {
-  "temperature": 0.3,
-  "top_p": 0.9,
-  "top_k": 15,
-  "min_p": 0.02,
-  "repetition_penalty": 1.05,
-  "penalty_last_n": 512
- },
- "reasoning_effort": "low",
- "lib_dirs": [
-  "/usr/local/cuda-12.8/lib64",
-  "/usr/local/cuda-12.8/targets/x86_64-linux/lib"
- ],
- "port": 8000,
- "host": "0.0.0.0",
- "api_key": "CHANGE_ME",
- "log": "/mnt/kioxia/maya/maya-ds4.log",
- "installer": {
-  "family": "deepseek",
-  "models_dir": "/mnt/kioxia/Maya-data/models",
-  "quant": "DeepSeek-V4.1-Flash-1017",
-  "ds4_quant": "maya-xs",
-  "model_dir": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS",
-  "written": "2026-10-31 11:49",
-  "speed_calibration": {
-   "date": "2026-10-31 11:49",
-   "version": "1.1.42",
-   "skipped": "chosen",
-   "kept": "dspark"
-  }
- },
- "env": {
-  "DS4_STREAM_ZC": "1",
-  "DS4_STREAM_WIN": "1",
-  "DS4_LAND": "1",
-  "MAYA_DS4_TP_GGUF_UNEVEN": "1",
-  "MAYA_DS4_AR2": "2",
-  "DS4_TP_SHARES": "4,5",
-  "MAYA_DS4_SLOT_KEEP": "1"
- },
- "thinking_budget": 768
+  "exe": "/mnt/kioxia/maya/build/maya-ds4",
+  "args": [
+    "--pack",
+    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4",
+    "--max-context",
+    "262144",
+    "--tp",
+    "2",
+    "--dspark",
+    "on",
+    "--mmap-experts",
+    "off",
+    "--experts",
+    "4",
+    "--reserve-mib",
+    "768"
+  ],
+  "cwd": "/mnt/kioxia/maya",
+  "tokenizer": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4/tokenizer",
+  "model_name": "deepseek-v4.1-flash",
+  "gpu": [
+    1,
+    0
+  ],
+  "sampling": {
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "top_k": 15,
+    "min_p": 0.02,
+    "repetition_penalty": 1.05,
+    "penalty_last_n": 512
+  },
+  "reasoning_effort": "low",
+  "lib_dirs": [
+    "/usr/local/cuda-12.8/lib64",
+    "/usr/local/cuda-12.8/targets/x86_64-linux/lib"
+  ],
+  "port": 8000,
+  "host": "0.0.0.0",
+  "api_key": "CHANGE_ME",
+  "log": "/mnt/kioxia/maya/maya-ds4.log",
+  "installer": {
+    "family": "deepseek",
+    "models_dir": "/mnt/kioxia/Maya-data/models",
+    "quant": "DeepSeek-V4.1-Flash-1017",
+    "ds4_quant": "maya-xs",
+    "model_dir": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS",
+    "written": "2026-10-31 11:49",
+    "speed_calibration": {
+      "date": "2026-10-31 11:49",
+      "version": "1.1.42",
+      "skipped": "chosen",
+      "kept": "dspark"
+    },
+    "calibration": {
+      "date": "2026-11-03 22:38",
+      "own": {
+        "--tp": 2,
+        "--cpu-threads": 10
+      },
+      "tp_sweep": {
+        "2": {
+          "decode": [
+            29.2,
+            30.0
+          ],
+          "prompt": 12
+        },
+        "1": {
+          "decode": [
+            30.5,
+            18.5
+          ],
+          "prompt": 8
+        }
+      },
+      "thread_sweep": {
+        "8": [
+          18.5,
+          19.2
+        ]
+      },
+      "tp_groups": {
+        "2": [
+          2,
+          2
+        ],
+        "1": [
+          1,
+          1
+        ]
+      },
+      "tp_skipped": {},
+      "effective_tp": [
+        2,
+        2
+      ],
+      "confirm": {},
+      "failed": {},
+      "tok_s": 29.6,
+      "own_tok_s": 29.6,
+      "prompt_tok_s": 12,
+      "long_prompt_tokens": 15622,
+      "seconds": 541
+    }
+  },
+  "env": {
+    "DS4_STREAM_ZC": "1",
+    "DS4_STREAM_WIN": "1",
+    "DS4_LAND": "1",
+    "DS4_TP_SHARES": "4,5",
+    "MAYA_DS4_TP_GGUF_UNEVEN": "1",
+    "MAYA_DS4_AR2": "2",
+    "MAYA_DS4_SLOT_KEEP": "1",
+    "DS4_ENGRAM_CACHE_MB": "2048"
+  },
+  "thinking_budget": 768
 }
