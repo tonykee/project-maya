@@ -125,3 +125,17 @@ cd /mnt/kioxia/maya
 - 其余 25 题两臂一致通过（代码执行、JSON/SQL/regex、逻辑、needle 1K/4K、约束遵循、工具调用 JSON 形状等）。结果文件：`/tmp/opencode/maya-pr821/quality_pr821_off_detail.json`、`/tmp/opencode/maya-pr821/quality_pr821_on_detail.json`。
 
 **解读**：#821 改变输出，存在个例波动（1 回退/2 修复/2 同错）属预期；在该 30 题自动回归集上**未观察到质量崩塌或系统性下滑**，与 decode +38% 的吞吐提升可并存。仍需在你真实工作负载（长生成、agent/工具调用、多轮、并发）上继续验证后再决定是否常开。
+
+### 2026-11-05 NVLink peer prefill all-reduce（DS4 TP=2）
+- 硬件：2× RTX 2080 Ti 22GB，NV2（2 link），CUDA P2P 可用（用户已验证）。
+- 发现：显式 `MAYA_DS4_AR2=2` 会让 `init_peer_ar` 跳过该 TP2 组（`peer prefill all-reduce not selected for AR2/flow group` 逻辑）；`MAYA_DS4_HIP_PEER_AR=auto` 在本机因 probe 额外缓冲显存不足失败（`GPU0 has 543 MiB free, needs 544 (auto: + the probe's input row)`），回退 host transport，prefill 386/708/876。
+- 生效配置：`MAYA_DS4_HIP_PEER_AR=1`（强制，省去 auto probe 额外行）+ 移除 `MAYA_DS4_AR2`，`MAYA_DS4_CACHE_SUB_RATIO=0.1` 保持。日志：`ds4: exact peer prefill all-reduce enabled on GPU0/GPU1 (320 MiB/rank)`。
+- 结果（bench_ds4，nonce prefill + 256tok decode×3）：
+
+| 配置 | Decode 中位 | Prefill 1.6K / 6.6K / 13.2K |
+|---|---:|---:|
+| `AR2=2`, 无 peer AR, `SUB=0.1`（前测） | 48.5 tok/s | 405 / 768 / 950 |
+| `HIP_PEER_AR=auto`, 无 AR2（probe OOM 回退 host） | 49.5 tok/s | 386 / 708 / 876 |
+| **`HIP_PEER_AR=1` 强制 NVLink peer, 无 AR2, `SUB=0.1`** | **51.7 tok/s** | **421 / 787 / 982** |
+
+- 结论：在本机 NVLink + GeForce 2080 Ti P2P 可用前提下，**强制 peer prefill all-reduce** 比 `AR2=2` 更好；显存紧张时优先用 `HIP_PEER_AR=1` 而非 `auto`。

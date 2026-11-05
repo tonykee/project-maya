@@ -33,4 +33,5 @@ cp docs/2080ti22gx2/start_ds4.sh docs/2080ti22gx2/stop_ds4.sh ./
 - DeepSeek 启动约 6–7 分钟（80GB 专家复制进 pinned RAM），期间内存会锁到只剩 ~6GB。
 - 测速前确认 `--prefill-chunk 8192` 生效；默认的 4096 会慢 15%。
 - 开了 `MAYA_DS4_SLOT_KEEP=1` 之后，重复的 prompt 会命中会话槽——测 prefill 一定要加随机前缀。
-- `maya-ds4.json` **默认开启** `MAYA_DS4_CACHE_SUB_RATIO=0.1`（#821，decode 近似路由）：在本机 2×2080 Ti 22G/TP=2/Maya-XS 上 decode `32.3 → 44.6~48.5 tok/s`，prefill 基本不变；**会改变输出**（自动回归 30 题 26/30→27/30，个例波动）。如需原生输出/排查质量，设 `MAYA_DS4_CACHE_SUB_RATIO=0`（见 `docs/ds4-cache-substitution.md`、`docs/SETTINGS.md`）。
+- `maya-ds4.json` **默认开启** `MAYA_DS4_CACHE_SUB_RATIO=0.1`（#821，decode 近似路由）：在本机 2×2080 Ti 22G/TP=2/Maya-XS 上 decode `32.3 → 44.6~51.7 tok/s`，prefill 基本不变；**会改变输出**（自动回归 30 题 26/30→27/30，个例波动）。如需原生输出/排查质量，设 `MAYA_DS4_CACHE_SUB_RATIO=0`（见 `docs/ds4-cache-substitution.md`、`docs/SETTINGS.md`）。
+- `maya-ds4.json` 使用 `MAYA_DS4_HIP_PEER_AR=1`（NVLink 直连 VRAM 的 prefill all-reduce，TP=2）并移除显式 `MAYA_DS4_AR2`：本机实测 prefill `421/787/982 tok/s`（1.6K/6.6K/13.2K），优于 `AR2=2` 路径。注意：显式 `AR2!=0` 会阻止 peer-AR 选中；`HIP_PEER_AR=auto` 探测在显存紧张时可能因额外 probe buffer 失败（本机 auto 报 `needs 544 MiB`），`1` 强制模式可在 P2P 可用时启用（需 NVLink + 驱动允许 CUDA P2P）。
