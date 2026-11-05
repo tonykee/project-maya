@@ -113,7 +113,11 @@
     "MAYA_DS4_TP_GGUF_UNEVEN": "1",
     "MAYA_DS4_AR2": "2",
     "MAYA_DS4_SLOT_KEEP": "1",
-    "DS4_ENGRAM_CACHE_MB": "2048"
+    "DS4_ENGRAM_CACHE_MB": "2048",
+    "MAYA_DS4_CACHE_SUB_RATIO": "0.1",
+    "MAYA_DS4_CACHE_SUB_N": "12",
+    "MAYA_DS4_CACHE_SUB_RISK_BUDGET": "0.6",
+    "MAYA_DS4_CACHE_SUB_NORM": "reference"
   },
   "thinking_budget": 768
 }

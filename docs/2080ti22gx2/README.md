@@ -33,3 +33,4 @@ cp docs/2080ti22gx2/start_ds4.sh docs/2080ti22gx2/stop_ds4.sh ./
 - DeepSeek 启动约 6–7 分钟（80GB 专家复制进 pinned RAM），期间内存会锁到只剩 ~6GB。
 - 测速前确认 `--prefill-chunk 8192` 生效；默认的 4096 会慢 15%。
 - 开了 `MAYA_DS4_SLOT_KEEP=1` 之后，重复的 prompt 会命中会话槽——测 prefill 一定要加随机前缀。
+- `maya-ds4.json` **默认开启** `MAYA_DS4_CACHE_SUB_RATIO=0.1`（#821，decode 近似路由）：在本机 2×2080 Ti 22G/TP=2/Maya-XS 上 decode `32.3 → 44.6~48.5 tok/s`，prefill 基本不变；**会改变输出**（自动回归 30 题 26/30→27/30，个例波动）。如需原生输出/排查质量，设 `MAYA_DS4_CACHE_SUB_RATIO=0`（见 `docs/ds4-cache-substitution.md`、`docs/SETTINGS.md`）。
