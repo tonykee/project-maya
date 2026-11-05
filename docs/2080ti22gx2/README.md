@@ -29,7 +29,7 @@ cp docs/2080ti22gx2/start_ds4.sh docs/2080ti22gx2/stop_ds4.sh ./
 
 ## DeepSeek Maya-XS v2 单独调优（不影响 v1）
 
-v2 包（`Maya-XS/maya-ds4-v2`）已存在；**不要直接复用 v1 调优参数**（同参数实测吞吐严重回退，见 `BENCHLOG`）。使用归零基线配置单独调优：
+v2 权重/分片（HF v2: 3 个模型分片 + 复用 Engram 分片 4-5）已就绪；pack 已重建到**独立物理目录** `Maya-XS-v2/maya-ds4-v2/`（大文件硬链接，非共用产物 `engram.bin`/`tokenizer`/画像 物理分开，不与 `Maya-XS/maya-ds4` 混用）。**不要直接复用 v1 调优参数**（同参数实测吞吐严重回退，见 `BENCHLOG`）；`expert-profile.bin`/`slots` 需在 v2 本机运行/校准时生成。使用归零基线配置单独调优：
 
 ```bash
 cp docs/2080ti22gx2/maya-ds4-v2.json ./maya-ds4-v2.json   # 按需改路径/api_key

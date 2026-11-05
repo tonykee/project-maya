@@ -2,7 +2,7 @@
   "exe": "/mnt/kioxia/maya/build/maya-ds4",
   "args": [
     "--pack",
-    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4-v2",
+    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS-v2/maya-ds4-v2",
     "--max-context",
     "262144",
     "--tp",
@@ -11,7 +11,7 @@
     "on"
   ],
   "cwd": "/mnt/kioxia/maya",
-  "tokenizer": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4-v2/tokenizer",
+  "tokenizer": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS-v2/maya-ds4-v2/tokenizer",
   "model_name": "deepseek-v4.1-flash-maya-xs-v2",
   "gpu": [
     1,
