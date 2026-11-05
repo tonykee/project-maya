@@ -36,6 +36,7 @@
   "log": "/mnt/kioxia/maya/maya-ds4-v2.log",
   "env": {
     "DS4_ENGRAM_CACHE_MB": "2048",
-    "MAYA_DS4_CACHE_SUB_RATIO": "0"
+    "MAYA_DS4_CACHE_SUB_RATIO": "0",
+    "MAYA_DS4_TP_GGUF_UNEVEN": "1"
   }
 }
