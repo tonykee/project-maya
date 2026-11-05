@@ -145,3 +145,15 @@ cd /mnt/kioxia/maya
 - 基线（同机紧接着，`AR2_DECODE` off）：prefill 437/782/968 tok/s，decode 中位 **58.1** (60.7/56.3/58.1)。
 - 开启 `MAYA_DS4_AR2_DECODE=1`（日志确认 `decode windows' all-reduces ... in one launch ... sums bit for bit`）：prefill 422/786/981 tok/s，decode 中位 **49.4** (47.3/57.9/49.4)，**-15%**。
 - **结论：无提升且回退，已撤销 `AR2_DECODE=1`，恢复基线配置。**
+
+### 2026-11-05 DeepSeek Maya-XS v2 测试（同 v1 调优参数）
+- 包：`/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4-v2`（v2 IQ1_S 3-shard GGUF 已存在，pack 含 `engram.bin`/`expert-profile.bin`/`slots`/`ds4.txt`/`tensors.txt`/`tokenizer`）。
+- 参数（不变）：`--tp 2 --dspark on --mmap-experts off --experts 4 --reserve-mib 768 --max-context 262144`，`HIP_PEER_AR=1`，`CACHE_SUB_RATIO=0.1/N=12/BUDGET=0.6`，`DS4_ENGRAM_CACHE_MB=2048`，`DS4_STREAM_*/LAND/TP_SHARES` 等。启动确认 peer AR 与 substitution 均生效。
+- 结果（bench_ds4 + quality_ds4 10 题）：
+
+| 版本 | Decode 中位 | Prefill 1.6K / 6.6K / 13.2K | quality_ds4.py |
+|---|---:|---:|---:|
+| **v1 (maya-ds4)，同参数基线** | **~48–58 tok/s** | **~421–437 / 782–787 / 968–982** | 7–8/10（波动） |
+| **v2 (maya-ds4-v2)，同参数** | **22.1** (19.5/24.3/22.1) | **107 / 292 / 414** | **9/10**（仅 word reversal fail） |
+
+- 结论：**v2 在当前 v1 调优参数下“能跑、功能正常（peer AR/sub 生效）、质量样本 OK”，但吞吐严重回退**（decode -55%+，prefill -57%~75%）。README 称 v2 “更接近原始/+20% writing” 可能依赖不同默认/调优（专家槽/预留/Engram/内存布局/profile）；**v2 需要在本机单独重调（`--experts`、`--reserve-mib`、Engram/cache、profile/calibration、chunk/线程等）后再评估**，当前生产已恢复 v1。
