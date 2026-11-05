@@ -139,3 +139,9 @@ cd /mnt/kioxia/maya
 | **`HIP_PEER_AR=1` 强制 NVLink peer, 无 AR2, `SUB=0.1`** | **51.7 tok/s** | **421 / 787 / 982** |
 
 - 结论：在本机 NVLink + GeForce 2080 Ti P2P 可用前提下，**强制 peer prefill all-reduce** 比 `AR2=2` 更好；显存紧张时优先用 `HIP_PEER_AR=1` 而非 `auto`。
+
+### 2026-11-05 `MAYA_DS4_AR2_DECODE=1` A/B（非 peer-VRAM decode all-reduce，精确）
+- 前提：`HIP_PEER_AR=1`（NVLink peer prefill 生效）, `SUB=0.1`，`AR2` 未显式设置。
+- 基线（同机紧接着，`AR2_DECODE` off）：prefill 437/782/968 tok/s，decode 中位 **58.1** (60.7/56.3/58.1)。
+- 开启 `MAYA_DS4_AR2_DECODE=1`（日志确认 `decode windows' all-reduces ... in one launch ... sums bit for bit`）：prefill 422/786/981 tok/s，decode 中位 **49.4** (47.3/57.9/49.4)，**-15%**。
+- **结论：无提升且回退，已撤销 `AR2_DECODE=1`，恢复基线配置。**
