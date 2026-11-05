@@ -157,3 +157,18 @@ cd /mnt/kioxia/maya
 | **v2 (maya-ds4-v2)，同参数** | **22.1** (19.5/24.3/22.1) | **107 / 292 / 414** | **9/10**（仅 word reversal fail） |
 
 - 结论：**v2 在当前 v1 调优参数下“能跑、功能正常（peer AR/sub 生效）、质量样本 OK”，但吞吐严重回退**（decode -55%+，prefill -57%~75%）。README 称 v2 “更接近原始/+20% writing” 可能依赖不同默认/调优（专家槽/预留/Engram/内存布局/profile）；**v2 需要在本机单独重调（`--experts`、`--reserve-mib`、Engram/cache、profile/calibration、chunk/线程等）后再评估**，当前生产已恢复 v1。
+
+### 2026-11-06 DeepSeek Maya-XS v2 物理分离+重建 pack+调优（目标：追平 v1）
+- **环境/前提**：`Maya-XS-v2/` 物理分离（5 个大 GGUF 硬链接：3 个 v2 模型分片 + Engram 4/5；`dspark/vision` 共享），`tools/ds4/pack_gguf.py` 重建干净 `Maya-XS-v2/maya-ds4-v2`（48795 tensors，含 `dspark-xs2`/vision，`expert-profile.bin`/`slots` 由本机运行生成；旧坏 pack 备份 `maya-ds4-v2.broken-20261106`）。`start_ds4_v2.sh`/独立 config/pid/log。
+- **根因（<20 tok/s）**：v2 基线漏 `MAYA_DS4_TP_GGUF_UNEVEN=1` → `tensor parallel 2 -> 1`（each GPU its own layers, 层 `[0,42]/[19,39]+head` 重叠）→ decode 17–19 / prefill 弱。修复后 TP2 uneven 生效（`DS4_TP_GGUF_UNEVEN`，part0/1）。
+- **非 TP（`--tp 1` + layer-split auto）实测**：layer-split 模式，GPU 利用率 ~50%（pipeline 气泡/负载），decode ~10 tok/s 量级，**更差**；2×2080 Ti 22GB 上 v2 仍应走 TP2 uneven。
+
+| 配置（均：TP2 uneven, pack=Maya-XS-v2/maya-ds4-v2, dspark on, engram2G, 2×2080Ti） | decode 中位数 tok/s | prefill tok/s (1.6k/6.6k/13.2k) | 备注 |
+|---|---:|---:|---|
+| 仅 `TP_GGUF_UNEVEN=1`，`--mmap-experts auto`，`--experts 6`，SUB0，无 peerAR | **8.4** | 256 / 268 / 374 | 修复 TP2 但缺 v1 结构参数，CPU lane 28-41% |
+| +`--mmap-experts off --experts 4 --reserve-mib 768`，SUB0，无 peerAR | **11.8** | 128 / 319 / 433 | `experts 4 of 6` |
+| +`HIP_PEER_AR=1` +`SUB=0.1` +`AR2=0` +v1 stream/land/slot_keep +`TP_SHARES=4,5`（=v1 结构+关键优化） | **22.7** | 117 / 318 / 453 | `exact peer prefill all-reduce` 生效，SUB 生效，CPU lane 9-13%，draft 接受率高；VRAM 2232/1848 in VRAM，218/1784 MiB free |
+| 去掉 `TP_SHARES`（让引擎决定） | **22.2** | 120 / 327 / 470 | VRAM 2428/2044，256/346 MiB free，差异不大 |
+
+- **对照 A/B（同机同时间状态，诊断用）**：v1 生产包/配置（`Maya-XS/maya-ds4`，5-shard，`HIP_PEER_AR+SUB`，原配置）→ **decode 25.7 tok/s，prefill 114 / 303 / 437**。v2 在等价配置下 **~22.7（≈ v1 当前的 88%）**，prefill 13k 略优/相当。
+- **结论**：`TP_GGUF_UNEVEN` 缺失是 <20 的直接原因，已修复；`--tp 1` 非 TP 更差。当前 v2 与 v1 在**本机当前状态**下已接近（差距主要在 decode）。v1 历史 48–58 tok/s（见上文记录）与本次 25.7 差距大，**疑似机器状态退化**（此前 BENCHLOG 已提示多次重启/下载/OOM/page cache 后性能未回干净水平；`start_ds4_v2.sh` 偶发 health-check 误判已观察到）。建议**重启主机/恢复干净状态后**重跑 v1 与 v2 基线；再做 v2 专项：expert-profile/slots 预热、`--reserve-mib` 微调、在保证 VRAM/peer buffer 的前提下验证 SUB/peer AR 组合、必要时对 v2 跑 speed calibration。注意 `CACHE_SUB` 近似会改变输出（v1 亦开启）。
