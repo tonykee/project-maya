@@ -57,3 +57,6 @@ build-vision.bat
 *.done
 /third_party/*.zip
 
+
+# local DS4 v2 config (contains secrets)
+/maya-ds4-v2.json

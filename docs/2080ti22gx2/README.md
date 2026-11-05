@@ -9,7 +9,7 @@
 | `maya-ds4.json` | DeepSeek-V4.1 Maya-XS 的完整调优配置（已脱敏，`api_key` 改成 `CHANGE_ME`） |
 | `maya-maya-s24.json` | GLM-5.3 Maya-S24 的完整调优配置（已脱敏） |
 | `maya-minimax-maya-xs.json` | MiniMax M3.1 Maya-XS 配置（已脱敏） |
-| `start_*.sh` / `stop_*.sh` | 三个模型的启停脚本（从配置读端口和 key） |
+| `start_*.sh` / `stop_*.sh` | 三个模型的启停脚本（从配置读端口和 key）；DeepSeek v2 用独立的 `start_ds4_v2.sh` / `stop_ds4_v2.sh`（独立 `maya-ds4-v2.json`、pid/log，不影响 v1） |
 | `dl_*.sh` / `downloads_queue.sh` | 断点续传下载脚本（DeepSeek 277GB / MiniMax 87GB，按 sha256 校验） |
 | `bench_*.py` / `decode_bench.py` / `conc_ds4.py` | 测速脚本（prefill 用随机 nonce，避免会话槽缓存污染） |
 | `test_image_ds4.py` | 验证图片请求是否复用上下文的脚本 |
@@ -26,6 +26,20 @@ sed -i 's/CHANGE_ME/你的密钥/' maya-ds4.json
 cp docs/2080ti22gx2/start_ds4.sh docs/2080ti22gx2/stop_ds4.sh ./
 ./start_ds4.sh
 ```
+
+## DeepSeek Maya-XS v2 单独调优（不影响 v1）
+
+v2 包（`Maya-XS/maya-ds4-v2`）已存在；**不要直接复用 v1 调优参数**（同参数实测吞吐严重回退，见 `BENCHLOG`）。使用归零基线配置单独调优：
+
+```bash
+cp docs/2080ti22gx2/maya-ds4-v2.json ./maya-ds4-v2.json   # 按需改路径/api_key
+./stop_ds4.sh                # 先停 v1（2×2080 Ti 一次只能跑一个）
+./start_ds4_v2.sh            # 使用 maya-ds4-v2.json + 独立 pid/log
+# 测完恢复 v1：
+./stop_ds4_v2.sh && ./start_ds4.sh
+```
+
+`maya-ds4-v2.json` 基线已归零 v1 专项调优（无 `--experts/--reserve-mib` 强设、无 `HIP_PEER_AR/TP_SHARES/STREAM/LAND` 等，`CACHE_SUB_RATIO=0`，保留 `DS4_ENGRAM_CACHE_MB=2048`），在此基础上按 `BENCHLOG` 纪律逐项 A/B（`--experts`、`--reserve-mib`、校准/profile、Engram、HIP peer、#821 等）。
 
 ## 注意
 

@@ -19,7 +19,15 @@ fi
 while read -r p; do
   [ -z "$p" ] && continue
   [ "$(ps -o comm= -p "$p" 2>/dev/null)" = "python" ] && pids+=("$p")
-done < <(pgrep -f "maya[.]py --config .*maya-ds4" 2>/dev/null || true)
+done < <(pgrep -f "maya[.]py --config .*maya-ds4\.json" 2>/dev/null || true)
+while read -r p; do
+  [ -z "$p" ] && continue
+  [ "$(ps -o comm= -p "$p" 2>/dev/null)" = "python" ] && pids+=("$p")
+done < <(pgrep -f "serve/server[.]py --engine .* --config .*maya-ds4\.json" 2>/dev/null || true)
+while read -r p; do
+  [ -z "$p" ] && continue
+  pids+=("$p")
+done < <(pgrep -f "build/maya-ds4 --serve --pack .*Maya-XS/maya-ds4([^-/v]|$|/tokenizer)" 2>/dev/null || true)
 
 if [ ${#pids[@]} -eq 0 ]; then echo "DeepSeek 未在运行。"; rm -f "$PID_FILE"; exit 0; fi
 mapfile -t pids < <(printf '%s\n' "${pids[@]}" | sort -u)
@@ -33,6 +41,8 @@ done
 if [ "$alive" -eq 1 ]; then
   echo "优雅退出超时，强制结束 ..."; kill -KILL "${pids[@]}" 2>/dev/null || true; sleep 2
 fi
+command -v fuser >/dev/null 2>&1 && fuser -k "$PORT"/tcp >/dev/null 2>&1 || true
+sleep 1
 if command -v ss >/dev/null 2>&1 && ss -tln 2>/dev/null | grep -q ":$PORT "; then
   echo "警告: 端口 $PORT 仍被占用"; ss -tlnp 2>/dev/null | grep ":$PORT " || true; rm -f "$PID_FILE"; exit 1
 fi

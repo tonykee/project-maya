@@ -1,0 +1,41 @@
+{
+  "exe": "/mnt/kioxia/maya/build/maya-ds4",
+  "args": [
+    "--pack",
+    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4-v2",
+    "--max-context",
+    "262144",
+    "--tp",
+    "2",
+    "--dspark",
+    "on"
+  ],
+  "cwd": "/mnt/kioxia/maya",
+  "tokenizer": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GGUF/Maya-XS/maya-ds4-v2/tokenizer",
+  "model_name": "deepseek-v4.1-flash-maya-xs-v2",
+  "gpu": [
+    1,
+    0
+  ],
+  "sampling": {
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "top_k": 15,
+    "min_p": 0.02,
+    "repetition_penalty": 1.05,
+    "penalty_last_n": 512
+  },
+  "reasoning_effort": "low",
+  "lib_dirs": [
+    "/usr/local/cuda-12.8/lib64",
+    "/usr/local/cuda-12.8/targets/x86_64-linux/lib"
+  ],
+  "port": 8000,
+  "host": "0.0.0.0",
+  "api_key": "CHANGE_ME",
+  "log": "/mnt/kioxia/maya/maya-ds4-v2.log",
+  "env": {
+    "DS4_ENGRAM_CACHE_MB": "2048",
+    "MAYA_DS4_CACHE_SUB_RATIO": "0"
+  }
+}

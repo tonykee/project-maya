@@ -19,15 +19,15 @@ fi
 while read -r p; do
   [ -z "$p" ] && continue
   [ "$(ps -o comm= -p "$p" 2>/dev/null)" = "python" ] && pids+=("$p")
-done < <(pgrep -f "maya[.]py --config .*maya-ds4" 2>/dev/null || true)
+done < <(pgrep -f "maya[.]py --config .*maya-ds4\.json" 2>/dev/null || true)
 while read -r p; do
   [ -z "$p" ] && continue
   [ "$(ps -o comm= -p "$p" 2>/dev/null)" = "python" ] && pids+=("$p")
-done < <(pgrep -f "serve/server[.]py --engine strata --config .*maya-ds4" 2>/dev/null || true)
+done < <(pgrep -f "serve/server[.]py --engine .* --config .*maya-ds4\.json" 2>/dev/null || true)
 while read -r p; do
   [ -z "$p" ] && continue
   pids+=("$p")
-done < <(pgrep -f "build/maya-ds4 --serve --pack .*Maya-XS/maya-ds4" 2>/dev/null || true)
+done < <(pgrep -f "build/maya-ds4 --serve --pack .*Maya-XS/maya-ds4([^-/v]|$|/tokenizer)" 2>/dev/null || true)
 
 if [ ${#pids[@]} -eq 0 ]; then echo "DeepSeek 未在运行。"; rm -f "$PID_FILE"; exit 0; fi
 mapfile -t pids < <(printf '%s\n' "${pids[@]}" | sort -u)
