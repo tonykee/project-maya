@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-CONFIG="maya-ds4.json"
+CONFIG="${MAYA_CONFIG:-maya-ds4.json}"
 RUN_DIR="$PWD/run"
 LOG_DIR="$PWD/logs"
 PID_FILE="$RUN_DIR/ds4.pid"

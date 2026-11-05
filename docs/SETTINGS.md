@@ -585,6 +585,25 @@ the SSD, and the threads are its queue: on Linux the default is twice the hardwa
 in RAM need few threads, so it matters most for Engram tables on an SSD.
 
 
+### DeepSeek-V4.1-Flash: cache-aware expert substitution (opt-in, approximate)
+
+`maya-ds4` can, on **decode and target verification**, replace a routed expert that is missing from GPU memory with an eligible, lower-ranked expert already in primary/helper VRAM. This can cut uncached CPU-lane/streaming work and improve decode throughput, but it **changes routing, logits and answers** (approximate inference). It is **off by default** (`RATIO=0`).
+
+- Applies to trunk decode/target verification (including parallel conversations). **Prefill and the drafter keep native routing.**
+- Preserves the active expert count and the original top-k denominator (no replacement renormalization). Selection keeps the model's authoritative biased order for protection; replacement ratios use unbiased positive scores. The risk/mass budget is a heuristic, **not** a correctness or confidence guarantee.
+- Refuses incompatible combinations such as `DS4_SYNC` and resident/RAM/disk expert-skipping modes. When enabled, generation uses the unfused router while retaining lookahead. Results depend on cache residency and cache/request history, so they are not reproducible from sampling seed alone.
+- Details, counters and measurements: [docs/ds4-cache-substitution.md](ds4-cache-substitution.md). 2080 Ti 22G×2 / TP=2 / Maya-XS validation (PR #821 build, 256K): decode **32.3 → 44.6 tok/s (+38%)**, prefill within ±2%; 30-question automated regression **26/30 → 27/30** (2 fixes, 1 regression, 2 shared failures) — no systematic drop observed on that set, but real workloads still require validation.
+
+| Setting | Default | |
+| --- | --- | --- |
+| `MAYA_DS4_CACHE_SUB_RATIO` | `0` | Minimum replacement/original unbiased positive score ratio in `[0,1]`. `0` disables substitution and keeps the native path. Aliases: `DS4_CACHE_SUB_RATIO`, `STRATA_DS4_CACHE_SUB_RATIO`. |
+| `MAYA_DS4_CACHE_SUB_N` | `12` | Candidate window: `12`, `16`, or `32` (clipped to the layer's expert count). |
+| `MAYA_DS4_CACHE_SUB_RISK_BUDGET` | `0.6` | Nonnegative finite normalized source+replacement mass budget per token/layer (heuristic). |
+| `MAYA_DS4_CACHE_SUB_NORM` | `reference` | Normalization mode; only `reference` (original top-k score denominator) is supported. |
+
+Suggested starting point: `RATIO=0.1, N=12, RISK_BUDGET=0.6`. Use `RATIO=0` for native routing.
+
+
 ## Drafting with DFlash2
 
 `./maya.sh --setup --draft dflash2` downloads the drafter (0.7 GB,

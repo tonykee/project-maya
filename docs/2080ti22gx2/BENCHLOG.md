@@ -97,3 +97,31 @@ cd /mnt/kioxia/maya
 - 生产定稿：v1.1.52（24df320）+ 完整 Engram + 2GB 行缓存 + `--reserve-mib 768`。**不需要 no-Engram 变体。**
 - v2 下载已续传（58%+）；下载会挤 page cache，若 53K 掉速可暂停下载或依赖 2GB 行缓存。
 
+
+## 2026-11-05：PR #821 cache-aware expert substitution（DS4 decode，opt-in，改输出）
+
+- 引擎：`/tmp/opencode/maya-pr821/build-pr821/maya-ds4`（PR 821 `5fbf233` + 本地 CUDA 修补：`ds4_model.cu` 将 `ds4_cache_sub_config.hpp` 改为非 HIP 条件包含）
+- 配置基线：生产 `maya-ds4.json` 同参（TP=2, dspark on, mmap-experts off, experts 4, reserve-mib 768, gpu [1,0], 256K, `DS4_ENGRAM_CACHE_MB=2048` 等）
+- 方法：PR 二进制跑 OFF/ON 两臂（排除版本差异），back-to-back 独立加载；`bench_ds4.py`（nonce prefill 1.6K/6.6K/13K + 256tok decode×3）+ `quality_ds4.py`（10 题，temp 0，reasoning off）
+
+| 配置 | Decode 中位（256 tok） | Prefill 1.6K / 6.6K / 13K | quality_ds4.py | 结论 |
+|---|---:|---:|---:|---|
+| `MAYA_DS4_CACHE_SUB_RATIO=0` | **32.3** (30.6/35.4/32.3) | 415.9 / 762.2 / 957.3 | 7/10（fail: strict JSON, word reversal, count letter i） | OFF 基线 |
+| `RATIO=0.1, N=12, BUDGET=0.6, NORM=reference` | **44.6** (44.6/53.3/41.6) | 405.4 / 763.5 / 946.9 | 8/10（fail: strict JSON, word reversal） | ✅ **decode +38.1%**，prefill ±1% 内；质量在该 10 题集未回退但样本小 |
+
+- 启动确认（ON）：`ds4: APPROXIMATE cache substitution: ratio 0.1, top 12, reference normalization, mass budget 0.6; changes answers and depends on cache residency`
+- 注意：#821 **改变模型输出**（近似推理），仅作用于 decode/target verification；prefill/drafter 原生。合入前需更广质量/真实任务回归；PR 说明 CUDA 执行此前未在作者工作站实测，本次在 2×2080 Ti 22G CUDA/sm_75 + TP=2 + Maya-XS GGUF 形态下验证可构建/可运行并获 decode 提升。
+
+### 2026-11-05 详细质量 A/B（同上 PR 821 build/配置，30 题可验证，temp 0）
+
+| 臂 | 得分 | 相对变化 |
+|---|---:|---|
+| OFF `RATIO=0` | **26/30** | 基线 |
+| ON `RATIO=0.1,N=12,BUDGET=0.6` | **27/30** | **净 +1**，无系统性下滑迹象 |
+
+- ON 修复：`arith_1234x5678`（OFF=7009752 错 → ON=7006652 对）、`json_extract`（OFF 输出带尾引号导致解析失败 → ON 通过）
+- ON 回退：`count_letter_i`（OFF=4 对 → ON=3 错）
+- 两者同错：`arith_multistep`（OFF=193, ON=172，均错，正确 219.5）、`word_reversal`（均得 `yarrubts`）
+- 其余 25 题两臂一致通过（代码执行、JSON/SQL/regex、逻辑、needle 1K/4K、约束遵循、工具调用 JSON 形状等）。结果文件：`/tmp/opencode/maya-pr821/quality_pr821_off_detail.json`、`/tmp/opencode/maya-pr821/quality_pr821_on_detail.json`。
+
+**解读**：#821 改变输出，存在个例波动（1 回退/2 修复/2 同错）属预期；在该 30 题自动回归集上**未观察到质量崩塌或系统性下滑**，与 decode +38% 的吞吐提升可并存。仍需在你真实工作负载（长生成、agent/工具调用、多轮、并发）上继续验证后再决定是否常开。
