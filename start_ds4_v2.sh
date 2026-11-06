@@ -28,7 +28,7 @@ health() {
 if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
   echo "v2 已在运行 (PID $(cat "$PID_FILE"), 端口 $PORT)。先执行 ./stop_ds4_v2.sh。"; exit 0
 fi
-if health >/dev/null; then
+if health >/dev/null && ss -ltnp 2>/dev/null | grep -q ":$PORT "; then
   echo "端口 $PORT 上已有服务在运行（可能是 v1 或其他实例）。先停止再启动 v2。"; exit 0
 fi
 
