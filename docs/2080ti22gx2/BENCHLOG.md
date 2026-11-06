@@ -183,3 +183,12 @@ cd /mnt/kioxia/maya
 | 同一开机后再次重启 v2 进程 | 23.2 | 423 / 430 / 462 | 再次出现运行/重载后退化（与历史“状态未回干净/重载退化”一致） |
 
 - **结论**：重启后干净首轮可达 **~42 tok/s decode、13k prefill ~1k tok/s**（接近 v1 历史区间；decode 略低于 v1 最佳 58，部分来自 v2 权重配方——w2 在 12 层为 `IQ2_XXS` vs v1 纯 `IQ1_S`——及波动）。**v2 配置瓶颈已解决**；后续以“减少不必要重载/保持干净状态、profile/slots 预热、reserve-mib 保持 768”为主。
+
+### 2026-11-06 追加：v2 重载/多轮掉速的定位与 settle 修复
+- **现象**：v2 直接启动后首轮 41.6 / 1000；v1→停 v1→v2 后 decode 20–29、13k prefill 443；同一 v2 进程空闲约 5 分钟后自己回到 **40.2 / 986**（无需重启）。v1 也会短暂掉速（21.8 → 54.1）。
+- **指标**（`GET /metrics` 的 `tiers.now`）：慢时 `vram_hit 0.74–0.85`、`cpu/ram_fetch 33–46`；快时 `0.93–0.97`、`6–12`；`engram_ms≈0.01`、`disk=0`。慢时 GPU 1.8GHz、PCIe Gen3 x16、NVLink 25.78GB/s 无错误、CPU 3.2–3.5GHz、内存带宽 37GB/s、96GB 区 2MB THP 均正常——**不是 OS/显卡驱动状态，也不是模型能力**。
+- **根因**：VRAM 热点专家集合与当前/下一轮 prompt 的路由不匹配；v2 profile 更尖（本机 top16 占 55% vs v1 35%），切换模型/长 prompt 后更容易长时间低命中。多轮长 prompt 每轮都会重置 decode 的热点，所以“多轮”不等于“会自愈”。
+- **修复/验证**：v2 配置加 `"DS4_SETTLE_MS": "2000"`（placement only）；同一条 v1→v2 路径上 109/443 prefill → **422/963**，decode 20–29 → **32–43**。`start_ds4_v2.sh` 在 ready 后调用 `tools/warmup_ds4.py`（短 decode + 1.6K/13K prefill，`MAYA_WARMUP=0` 跳过）。
+- **未采用的尝试**：v1 profile 移植（decode 38.9，略差）、`--expert-profile none`（24.2，差）、自动 TP（4476 槽，prefill 970 / decode 38.7；能吃下卡1 的 1.6GB 但无速度收益）、`DS4_TP_SHARES=3,6`（3598 槽，更差）、`4,5:3,6`（4166 槽，无收益）、`DS4_SETTLE_MS=4000`（29–32，swap 排队拖慢）、`DS4_SETTLE_MS=500`（24.6，缓存太冷）、`CACHE_SUB_RATIO=0.2`（40–41，与 0.1 持平）、`CACHE_SUB_N=32`（39–42，持平）、显式 2MB hugepage 池（无稳定收益，已回滚）。卡1 的 ~1.6GB 空闲是 expert cache spare/prompt ring/reserve 的余量，硬填无收益，保留 `4,5`。
+- **v2 上限（分工作集）**：2 轮预热后，匹配 warm-up 文本的 decode 到 **49.4 tok/s**（`vram_hit 0.99`、`cpu 2`），已基本到 v1 的 50；换成另一组代码 prompt 的 decode_bench 为 31–40，说明命中率取决于工作集。通用混合 prompt 的稳定区间仍是 40–42 / 970–1000 prefill。要把“任意 prompt 都 50”做成常态，需要按真实业务文本预热，或改 v2 的 `IQ2_XXS` 权重配方；单靠调参/提高 ratio 没有带来额外的稳定收益。
+- **启动默认**：`start_ds4_v2.sh` 现在在 ready 后跑 `tools/warmup_ds4.py --rounds 2`（`MAYA_WARMUP=0` 跳过，`MAYA_WARMUP_ROUNDS=N` 调整）；v2 配置的 `DS4_SETTLE_MS=2000` 保持。

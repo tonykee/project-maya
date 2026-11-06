@@ -51,6 +51,15 @@ if ! health >/dev/null; then
   echo; echo "超时：${WAIT_S}s 内未就绪。日志: tail -f $LOG_FILE $(cfg "d.get('log','')")"; exit 1
 fi
 
+# The first prompts after a load teach the VRAM expert cache and the prompt ring
+# their working set; without this the first real request can run at half speed.
+# MAYA_WARMUP=0 skips it, MAYA_WARMUP_ROUNDS=N repeats the prompt pair.
+if [ "${MAYA_WARMUP:-1}" != "0" ]; then
+  echo "预热专家缓存（约 60-90 秒；MAYA_WARMUP=0 可跳过，MAYA_WARMUP_ROUNDS=N 调整轮数）..."
+  timeout 240 "${PY:-./.venv/bin/python}" tools/warmup_ds4.py --url "http://127.0.0.1:$PORT" --key "$KEY" \
+    --rounds "${MAYA_WARMUP_ROUNDS:-2}" || true
+fi
+
 IP="$(ip -4 addr show 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | head -n1 || true)"
 echo
 echo "DeepSeek v2 已启动 (PID $PID)  pack=$(cfg "([a for i,a in enumerate(d['args']) if a=='--pack'] and d['args'][d['args'].index('--pack')+1]) or 'maya-ds4-v2'")"
