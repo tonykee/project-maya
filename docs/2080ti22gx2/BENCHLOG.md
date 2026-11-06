@@ -172,3 +172,14 @@ cd /mnt/kioxia/maya
 
 - **对照 A/B（同机同时间状态，诊断用）**：v1 生产包/配置（`Maya-XS/maya-ds4`，5-shard，`HIP_PEER_AR+SUB`，原配置）→ **decode 25.7 tok/s，prefill 114 / 303 / 437**。v2 在等价配置下 **~22.7（≈ v1 当前的 88%）**，prefill 13k 略优/相当。
 - **结论**：`TP_GGUF_UNEVEN` 缺失是 <20 的直接原因，已修复；`--tp 1` 非 TP 更差。当前 v2 与 v1 在**本机当前状态**下已接近（差距主要在 decode）。v1 历史 48–58 tok/s（见上文记录）与本次 25.7 差距大，**疑似机器状态退化**（此前 BENCHLOG 已提示多次重启/下载/OOM/page cache 后性能未回干净水平；`start_ds4_v2.sh` 偶发 health-check 误判已观察到）。建议**重启主机/恢复干净状态后**重跑 v1 与 v2 基线；再做 v2 专项：expert-profile/slots 预热、`--reserve-mib` 微调、在保证 VRAM/peer buffer 的前提下验证 SUB/peer AR 组合、必要时对 v2 跑 speed calibration。注意 `CACHE_SUB` 近似会改变输出（v1 亦开启）。
+
+### 2026-11-06（重启后）v2 干净状态实测
+- 配置：`TP2 uneven` + `--tp 2 --dspark on --mmap-experts off --experts 4 --reserve-mib 768` + `HIP_PEER_AR=1`(生效 320MiB/rank) + `SUB=0.1`(近似) + `AR2=0` + `TP_SHARES=4,5` + stream/land/slot_keep，`Maya-XS-v2/maya-ds4-v2`（重建 pack）。
+
+| 时机 | decode 中位数 tok/s | prefill tok/s (1.6k/6.6k/13.2k) | 备注 |
+|---|---:|---:|---|
+| **重启后首轮加载**（reserve-mib 768） | **42.1** (41.2/44.3/42.1) | **438 / 806 / 1001** | CUDA0 226MiB free；13k prefill 达 1k tok/s |
+| reserve-mib 512 A/B | 35.8 (39.8/35.8/22.6，不稳) | 397 / 714 / 886 | 更多 VRAM 专家但更差/不稳，**回退 768** |
+| 同一开机后再次重启 v2 进程 | 23.2 | 423 / 430 / 462 | 再次出现运行/重载后退化（与历史“状态未回干净/重载退化”一致） |
+
+- **结论**：重启后干净首轮可达 **~42 tok/s decode、13k prefill ~1k tok/s**（接近 v1 历史区间；decode 略低于 v1 最佳 58，部分来自 v2 权重配方——w2 在 12 层为 `IQ2_XXS` vs v1 纯 `IQ1_S`——及波动）。**v2 配置瓶颈已解决**；后续以“减少不必要重载/保持干净状态、profile/slots 预热、reserve-mib 保持 768”为主。
