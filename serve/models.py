@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import maya_names  # noqa: E402  (tools/) a setting under either of its names
 import maya_quants  # noqa: E402  (tools/) the quants' names users see, and each config's family
+from serve import glm_dsa_product as G53  # noqa: E402  GLM-5.3 (744B, glm-dsa): what its engine serves today
 
 SWITCH_FILE = ".maya-switch.json"           # the server's note to maya.py: start this config next (a switch)
 DELETE_FILE = ".maya-delete.json"           # ... and to the next server: delete this config (it was the one running)
@@ -244,8 +245,69 @@ def mm3_pack_has(cfg: dict, key: str) -> bool:
         return False
 
 
+# ------------------------------------------------------------------ refusal ablation (an optional direction file)
+# The engines that project a direction out per request (GEN ablate=1; loaded with --ablate FILE --ablate-default off):
+# maya-ds4, maya-mm3 and the `maya` engine's GLM models (GLM-5.3-Flash, GLM-5.3; not on the Mac engine).  Qwen
+# (CYBER-FROST) has none; without a direction file the dashboard shows no switch.
+ABLATE_FAMILIES = ("deepseek", "minimax", "glm")
+# a model repo's direction file (phase 2: fitted and shipped by us): <Model>-refusal-direction.gguf - a control vector
+# GGUF (general.architecture "controlvector", direction.1 F32 [n_embd]) with maya.ablate.scale / .fit_layer / .model
+# / .fitted_on / .version metadata; the setup downloads it with the model and records it as cfg["ablate"]["file"]
+ABLATE_SUFFIX = "-refusal-direction.gguf"
+
+
+def ablate_file(cfg: dict) -> Path | None:
+    """The config's direction file (cfg["ablate"]["file"], else an --ablate FILE in its args) when it is on disk."""
+    a = cfg.get("ablate") if isinstance(cfg.get("ablate"), dict) else {}
+    f = a.get("file") or flag(cfg.get("args") or [], "--ablate")
+    p = Path(str(f)).expanduser() if f else None
+    return p if p is not None and p.is_file() else None
+
+
+def ablate_choice(cfg: dict) -> dict:
+    """{"available": bool, "why": the reason when not} - the Models page's and the Chat's switch (hidden without)."""
+    fam = family(cfg)
+    if fam not in ABLATE_FAMILIES or (fam == "glm" and cfg.get("backend") == "metal"):
+        return {"available": False, "why": "not available for this model"}
+    if ablate_file(cfg) is None:
+        return {"available": False, "why": "no refusal direction file for this model (its repo ships none yet)"}
+    if fam == "minimax" and (_int(flag(cfg.get("args") or [], "--tp"), 0) or 0) > 0:
+        return {"available": False, "why": "not with the tensor-parallel split (Tensor parallel: 0 offers it)"}
+    return {"available": True, "why": ""}
+
+
+def ablate_default(cfg: dict) -> bool:
+    """The Models page's default for requests that leave `ablate` out: cfg["ablate"]["default"] (off unless set), or
+    the config's sampling.ablate."""
+    a = cfg.get("ablate") if isinstance(cfg.get("ablate"), dict) else {}
+    return a.get("default") is True or (cfg.get("sampling") or {}).get("ablate") is True
+
+
+def ablate_args(cfg: dict, args: list) -> list:
+    """args with the direction loaded, off by default (--ablate FILE --ablate-default off), where it can be; without
+    a direction file (or on an engine without the projection) none of the three flags - the command as before."""
+    for f in ("--ablate", "--ablate-default", "--ablate-layer", "--ablate-scale"):
+        args = drop_flag(args, f)
+    p = ablate_file(cfg)
+    if p is None or family(cfg) not in ABLATE_FAMILIES or (family(cfg) == "glm" and cfg.get("backend") == "metal"):
+        return args
+    a = cfg.get("ablate") if isinstance(cfg.get("ablate"), dict) else {}
+    args = set_flag(args, "--ablate", str(p))
+    args = set_flag(args, "--ablate-default", "off")
+    if a.get("scale") is not None:   # (the file's own maya.ablate.scale otherwise)
+        args = set_flag(args, "--ablate-scale", a["scale"])
+    return args
+
+
 def choices(cfg: dict) -> dict:
-    """What this config can be set to beyond what it is: a drafter and an image encoder that exist on this PC."""
+    """What this config can be set to beyond what it is: a drafter and an image encoder that exist on this PC, and the
+    refusal-ablation switch (ablate_choice)."""
+    out = _choices(cfg)
+    out["ablate"] = ablate_choice(cfg)
+    return out
+
+
+def _choices(cfg: dict) -> dict:
     if family(cfg) == "minimax":
         return {"draft": ["dspark", "none"] if mm3_pack_has(cfg, "dspark.num_hidden_layers") else ["none"],
                 "images": mm3_pack_has(cfg, "vision.hidden_size")}
@@ -255,6 +317,11 @@ def choices(cfg: dict) -> dict:
     if family(cfg) == "qwen":                          # (images: the setup's maya-vision entry, on or kept off)
         return {"draft": ["mtp", "none"] if qwen_mtp(cfg) is not None else ["none"],
                 "images": bool(cfg.get("vision") or cfg.get("vision_off"))}
+    if G53.config_is_glm_dsa(cfg):
+        # GLM-5.3 (744B): text only (no vision tower), its NextN block drafts (DFlash2's drafter is GLM-5.3-Flash's),
+        # and what its engine serves today - KV streaming, answers at once decoded together (glm_dsa_product)
+        return {"draft": ["mtp"], "images": False, "text_only": True, "dflash2": False,
+                "kv_streaming": G53.KV_STREAMING, "batched": G53.BATCHED_ROWS}
     f = dflash_file(cfg)
     return {"draft": ["mtp", "dflash2"] if f is not None else ["mtp"],
             "images": bool(cfg.get("vision") or cfg.get("vision_off"))}
@@ -264,7 +331,9 @@ def choices(cfg: dict) -> dict:
 def settings_of(cfg: dict) -> dict:
     args = cfg.get("args") or []
     env = {str(k): str(v) for k, v in (cfg.get("env") or {}).items()}
-    out = {"context": _int(flag(args, "--max-context"), 32768), "gpus": gpus_of(cfg), "env": env}
+    out = {"context": _int(flag(args, "--max-context"), 32768), "gpus": gpus_of(cfg), "env": env,
+           # (refusal ablation: the default for requests that leave `ablate` out - ablate_default)
+           "ablate": ablate_default(cfg)}
     if family(cfg) == "minimax":                       # (maya-mm3's own defaults where the config names none)
         vision, kvs = flag(args, "--vision"), flag(args, "--kv-streaming")
         out.update(images=vision == "on" or (vision is None and mm3_pack_has(cfg, "vision.hidden_size")),
@@ -302,7 +371,22 @@ def settings_of(cfg: dict) -> dict:
                parallel=_int(flag(args, "--parallel"), 1), draft="dflash2" if flag(args, "--dflash") else "mtp",
                expert_cache=None if ec == "auto" else _int(ec), prefill=None if pf == "auto" else _int(pf),
                kv_streaming=glm_streams(cfg), kv_resident=_int(flag(args, "--kv-resident")))
+    if not G53.KV_STREAMING and G53.config_is_glm_dsa(cfg):   # (GLM-5.3: its whole cache in VRAM - apply() writes it)
+        out.update(kv_streaming=False, kv_resident=None)
     return out
+
+
+def glm53_kv_bytes(cfg: dict) -> int | None:
+    """A GLM-5.3 (glm-dsa) config's cache bytes a context token (glm_dsa_product.kv_bytes_per_token) with the formats
+    its engine runs: the INT8 latent unless --kv fp16 or MAYA_GLM_KV_INT8=0 says FP16 (the environment wins, as in the
+    engine), the index keys FP32 unless MAYA_GLM_IDX_FP16=1.  None for any other config."""
+    if not G53.config_is_glm_dsa(cfg):
+        return None
+    env = {str(k): str(v) for k, v in (cfg.get("env") or {}).items()}
+    int8 = maya_names.lookup(env, "MAYA_GLM_KV_INT8")
+    int8 = int8.strip() != "0" if int8 is not None else flag(cfg.get("args") or [], "--kv") in (None, "int8")
+    return G53.kv_bytes_per_token(G53.config_pack(cfg), int8,
+                                  str(maya_names.lookup(env, "MAYA_GLM_IDX_FP16", "")).strip() == "1")
 
 
 def glm_streams(cfg: dict) -> bool:
@@ -350,13 +434,26 @@ def apply(cfg: dict, settings: dict) -> dict:
         raise ValueError("the settings must be a JSON object")
     fam = family(cfg)
     ds4 = fam == "deepseek"
-    known = {"minimax": MM3_KEYS, "deepseek": DS4_KEYS, "qwen": QWEN_KEYS}.get(fam, GLM_KEYS)
+    known = {"minimax": MM3_KEYS, "deepseek": DS4_KEYS, "qwen": QWEN_KEYS}.get(fam, GLM_KEYS) + ("ablate",)
     unknown = sorted(set(settings) - set(known))
     if unknown:
         raise ValueError(f"not a setting of this model: {', '.join(unknown)}")
     s = {**settings_of(cfg), **settings}
     can = choices(cfg)
     out = copy.deepcopy(cfg)
+    # refusal ablation's default (cfg["ablate"]["default"]: requests without `ablate` take it; not an engine setting -
+    # no restart, the direction stays loaded and each request asks); on only where the switch is (ablate_choice)
+    if not isinstance(s.get("ablate"), bool):
+        raise ValueError("Refusal ablation: on or off")
+    if s["ablate"] and settings.get("ablate") is True and not can["ablate"]["available"]:
+        raise ValueError("Refusal ablation: " + can["ablate"]["why"])
+    if isinstance(out.get("ablate"), dict):
+        if s["ablate"]:
+            out["ablate"]["default"] = True
+        else:
+            out["ablate"].pop("default", None)
+    if not s["ablate"] and isinstance(out.get("sampling"), dict):
+        out["sampling"].pop("ablate", None)
     args = [str(a) for a in out.get("args") or []]
     args = set_flag(args, "--max-context", _num(s, "context", 1024, 1048576, "Context size", none_ok=False))
 
@@ -503,15 +600,19 @@ def apply(cfg: dict, settings: dict) -> dict:
         conf = _dec(s, "dspark_conf", 0, 1, "Draft confidence")
         args = set_flag(args, "--dspark-conf", f"{conf:g}") if conf is not None else drop_flag(args, "--dspark-conf")
     else:
+        dsa = G53.config_is_glm_dsa(cfg)                # GLM-5.3 (744B): what its engine takes (choices)
         par = _num(s, "parallel", 1, 8, "Answers at once", none_ok=False)
         args = set_flag(args, "--parallel", par) if par > 1 or "--parallel" in args else args
         if s.get("draft") not in can["draft"]:
-            raise ValueError("Drafting: the DFlash2 drafter is not on this PC (the setup's --draft dflash2 downloads "
+            raise ValueError("Drafting: GLM-5.3 drafts with its own MTP (NextN) block" if dsa else
+                             "Drafting: the DFlash2 drafter is not on this PC (the setup's --draft dflash2 downloads "
                              "it)" if s.get("draft") == "dflash2" else "Drafting: MTP or DFlash2")
         if s["draft"] == "dflash2":
             args = set_flag(args, "--dflash", dflash_file(cfg))
         else:
             args = drop_flag(args, "--dflash")
+        if dsa and s.get("images"):
+            raise ValueError("Images: GLM-5.3 reads text only (the model has no vision tower)")
         if s.get("images") and not out.get("vision"):
             if not out.get("vision_off"):
                 raise ValueError("Images: this model was set up without its image encoder (the setup adds it)")
@@ -528,11 +629,23 @@ def apply(cfg: dict, settings: dict) -> dict:
         pf = _num(s, "prefill", 64, 65536, "Prompt chunk")
         if pf is not None or "--prefill" in args:
             args = set_flag(args, "--prefill", "auto" if pf is None else pf)
-        if "--kv-streaming" in args or bool(s.get("kv_streaming")) != glm_streams(cfg):
-            args = set_flag(args, "--kv-streaming", "on" if s.get("kv_streaming") else "off")
-        kr = _num(s, "kv_resident", 1024, 1048576, "Positions kept in VRAM")
-        args = set_flag(args, "--kv-resident", kr) if kr is not None and s.get("kv_streaming") else \
-            drop_flag(args, "--kv-resident")
+        if dsa and not G53.KV_STREAMING:
+            # GLM-5.3: the engine keeps its whole cache in VRAM for now (a window below the context does not start) -
+            # asked for, a clear no; a config with it (an older setup's "on", a window) gets it off, so every context
+            # starts
+            if settings.get("kv_streaming") or (_int(settings.get("kv_resident"), 0) or 0) > 0:
+                raise ValueError("KV streaming: not served on GLM-5.3 yet - its whole attention cache stays in VRAM")
+            if "--kv-streaming" in args or glm_streams(cfg):
+                args = set_flag(args, "--kv-streaming", "off")
+            args = drop_flag(args, "--kv-resident")
+        else:
+            if "--kv-streaming" in args or bool(s.get("kv_streaming")) != glm_streams(cfg):
+                args = set_flag(args, "--kv-streaming", "on" if s.get("kv_streaming") else "off")
+            kr = _num(s, "kv_resident", 1024, 1048576, "Positions kept in VRAM")
+            args = set_flag(args, "--kv-resident", kr) if kr is not None and s.get("kv_streaming") else \
+                drop_flag(args, "--kv-resident")
+    if isinstance(out.get("ablate"), dict):   # (a direction the setup recorded: loaded, off by default)
+        args = ablate_args(out, args)
     out["args"] = args
     return out
 
@@ -598,7 +711,10 @@ def quant_label(cfg: dict, path: Path) -> str:
     """The files a config runs, as shown after the model's name ("Maya-XS", "UD-Q8_K_XL", "EXL3 3.5 bpw" - the setup's
     names, maya_quants); else its installer key, or the config's own name for one the setup did not write."""
     fam, key = family(cfg), maya_quants.config_key(cfg)
+    if maya_quants.is_glm53(cfg):                      # (GLM-5.3, 744B: "UD-IQ2_M" after its own name)
+        return str(maya_quants.glm53_quant(key) or path.stem.removeprefix("maya-").removesuffix("-hip"))
     what = maya_quants.tier(fam, key) or maya_quants.OTHERS.get((fam, key)) or OTHER_QUANTS.get((fam, str(key).lower()))
+    what = maya_quants.exl3_bits(cfg) or what          # (an EXL3 quant set up by hand: its folder's bits, maya_quants)
     return str(what or key or path.stem.removeprefix("maya-").removesuffix("-hip"))
 
 
@@ -627,7 +743,10 @@ def describe(path: Path, running: str | None) -> dict:
     cur = shown_settings(cfg)
     setup = dict(inst.get("as_set_up") or cur)
     setup["env"] = shown_env(setup.get("env"))
-    return {"file": path.name, "path": str(path), "model": cfg.get("model_name") or "", "family": family(cfg),
+    # GLM-5.3 (744B): its name on screen beside the quant, and its cache's bytes a context token for the Context size's
+    # line (the page's GLM_KV_BYTES is GLM-5.3-Flash's) - keys only its configs have
+    own = {"shown": G53.LABEL, "kv_bytes": glm53_kv_bytes(cfg)} if G53.config_is_glm_dsa(cfg) else {}
+    return {**own, "file": path.name, "path": str(path), "model": cfg.get("model_name") or "", "family": family(cfg),
             "quant": quant_label(cfg, path), "backend": cfg.get("backend") or "cuda", "written": inst.get("written"),
             "used": used, "running": running is not None and str(path.resolve()) == str(Path(running).resolve()),
             "port": cfg.get("port"), "script": script, "folder": str(pack.parent) if pack else None,
@@ -746,6 +865,12 @@ TURBO_CONTEXT_FAMILIES = ("glm", "minimax")         # ... DeepSeek's context is 
 # of its 8 (33.2 -> 38.8; 3 gave a page with a duplicate import and slower drafts).
 TURBO_ENV = {"glm": {"MAYA_GLM_MISS_SKIP_W": "0.16", "MAYA_GLM_MISS_SKIP_FROM": "23", "MAYA_GLM_RESIDENT_TOPK": "4"},
              "deepseek": {"MAYA_DS4_RAM_SKIP_W": "0.14", "MAYA_DS4_DSPARK_CUM": "0.3", "MAYA_DS4_RESIDENT_TOPK": "3"}}
+# GLM-5.3 (744B, glm-dsa) has its own: TURBO_ENV's GLM values were tuned on GLM-5.3-Flash's 45 layers.  Measured on
+# GLM-5.3 Maya-XS (greedy, 512 tokens): MAYA_GLM_ROUTE_AFFINITY (added to a VRAM-resident expert's selection score, so
+# more of a token's experts are ones VRAM holds) at 0.2 decodes 22-25% faster, KL 0.20 against the exact route, the loop
+# test and a 20K-token document question as without it; 0.5 and up drifted into echoing the prompt, and
+# MAYA_GLM_RESIDENT_TOPK 6 to 4 broke the code answers (not used).
+TURBO_ENV_G53 = {"MAYA_GLM_ROUTE_AFFINITY": "0.2"}
 # the drafter that goes fastest where the pack has it: DSpark (DeepSeek, MiniMax), MTP (Qwen).  GLM keeps the drafter the
 # setup measured for this PC (MTP or DFlash2: which is faster depends on the GPUs).
 TURBO_DRAFT = {"deepseek": "dspark", "minimax": "dspark", "qwen": "mtp"}
@@ -781,7 +906,7 @@ def turbo_patch(cfg: dict) -> dict:
         patch["dspark_conf"] = TURBO_DSPARK_CONF
     if fam == "deepseek" and cur.get("prompt_lookup") is False:
         patch["prompt_lookup"] = True
-    env = TURBO_ENV.get(fam)
+    env = TURBO_ENV_G53 if G53.config_is_glm_dsa(cfg) else TURBO_ENV.get(fam)
     if env and turbo_smallest_quant(cfg):              # (no expert cap on the 1-2 bit quants: see TURBO_NO_TOPK)
         env = {k: v for k, v in env.items() if not k.endswith("_RESIDENT_TOPK")}
     if env and any(cur["env"].get(k) != v for k, v in env.items()):
@@ -847,9 +972,10 @@ def turbo_disable(path: Path) -> dict:
 
 # ------------------------------------------------------------------ deleting a model (the page's Delete)
 # Off the list: its config, its start scripts and what Maya keeps beside it.  With its files: what the setup downloaded
-# for it and the pack Maya built - never a file another model here runs from, nor one outside the models folder the
-# setup downloaded into (a GGUF of your own stays; its pack goes).  Its DFlash2 drafter goes too: another model drafting
-# with the same file drafts with MTP from then on (its --dflash taken out).
+# for it and the pack Maya built - never a file another model here runs from (hard-linked Engram tables, a vision tower
+# or drafter several configs use, a pack built in another model's folder: they stay, and the page says so), nor one
+# outside the models folders the setup downloaded into (a GGUF of your own stays, and a pack built beside it).  Its
+# DFlash2 drafter goes too when no other model drafts with it.
 GGUF_PART = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.I)
 
 
@@ -965,79 +1091,147 @@ def _size(p: Path) -> int:
     return total
 
 
-def _links_into(roots: list, p: Path) -> bool:
-    """Whether a symbolic link under one of `roots` (another model's folders) points into `p`: deleting `p` would leave
-    it dangling (the setup links the Engram tables between model folders when it cannot hard link them)."""
-    seen = 0
-    for r in roots:
-        if not r.is_dir():
+def _linkers(roots: list, p: Path) -> list:
+    """The names of `roots` ([(name, folder)]: other models' folders) under which a symbolic link points into `p`:
+    deleting `p` would leave it dangling (the setup links the Engram tables between model folders when it cannot hard
+    link them)."""
+    seen, out = 0, []
+    for name, r in roots:
+        if name in out or not r.is_dir():
             continue
         for dp, dirs, files in os.walk(r):
-            for n in dirs + files:
-                seen += 1
-                f = os.path.join(dp, n)
-                if os.path.islink(f) and _within(_res(f) or Path(f), p):
-                    return True
+            if any(os.path.islink(os.path.join(dp, n)) and _within(_res(os.path.join(dp, n)) or Path(dp, n), p)
+                   for n in dirs + files):
+                out.append(name)
+                break
+            seen += len(dirs) + len(files)
             if seen > 20000:
-                return False
-    return False
+                return out
+    return out
+
+
+def _hard_links(p: Path) -> int:
+    """How many files in `p` (or `p` itself) are hard links another folder holds too: deleting them frees nothing."""
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return 0
+    if not stat.S_ISDIR(st.st_mode):
+        return int(stat.S_ISREG(st.st_mode) and st.st_nlink > 1)
+    n = 0
+    for dp, _, files in os.walk(p):
+        for f in files:
+            try:
+                s = os.lstat(os.path.join(dp, f))
+            except OSError:
+                continue
+            n += int(stat.S_ISREG(s.st_mode) and s.st_nlink > 1)
+    return n
 
 
 def delete_plan(root: Path, path: Path) -> dict:
     """What deleting the config at `path` with its files would delete: {"ok", "why" (when not ok), "items": [{"path",
-    "what" (folder, pack, gguf, vision, drafter), "bytes"}], "bytes", "folder", "gguf" (model files), "pack", "vision",
-    "drafter" (its bytes, or None), "drafter_users" (the other configs drafting with it), "kept" (what stays, said)}."""
+    "what" (folder, pack, gguf, vision, drafter), "bytes", "linked" (hard links in it: they free nothing)}], "bytes",
+    "folder", "gguf" (model files), "pack", "vision", "drafter" (its bytes, or None), "drafter_users" (the other configs
+    drafting with its drafter: it stays then), "shared" (what stays because another model uses it: [{"path", "what",
+    "users" (their configs), "files" (model files, for "gguf")}]), "linked" (hard links in all), "kept" (what else stays,
+    said)}.  Only what is inside a models folder the setup downloaded into (models_dirs: never the folder itself, a drive's
+    root, the project or the home folder), by its real path: a link out of it is never followed."""
     path = Path(path)
     cfg = read(path)
     me = _res(path)
     others = [(p, read(p)) for p in config_paths(root) if _res(p) != me]
-    refs = [r for _, c in others for r in runs_from(c)]
-    homes = [h.parent for h in (_res(pack_of(c)) for _, c in others) if h is not None]   # (their folders: links in them)
+    refs = [(p.name, runs_from(c)) for p, c in others]
+    # (their folders, and what they run from: a link in one of them into this model's files keeps those)
+    homes = [(p.name, h.parent) for p, h in ((p, _res(pack_of(c))) for p, c in others) if h is not None]
+    homes += [(n, r) for n, rs in refs for r in rs]
     out = {"ok": False, "why": None, "items": [], "bytes": 0, "folder": None, "gguf": 0, "pack": False,
-           "vision": False, "drafter": None, "drafter_users": [], "kept": []}
+           "vision": False, "drafter": None, "drafter_users": [], "shared": [], "linked": 0, "kept": []}
     models = _res((cfg.get("installer") or {}).get("models_dir"))
     pack = _res(pack_of(cfg))
     if models is None or pack is None:
         out["why"] = "Maya's setup did not download this model's files, so it does not know which ones are its own"
+        return out
+    # (the folders the setup downloads into: every config's --models-dir and its own Maya-data/models - never a drive's
+    # root, the home folder or one it is in)
+    home = Path.home().resolve()
+    known = [k for k in [_res((read(p).get("installer") or {}).get("models_dir")) for p in config_paths(root)] +
+             [_res(Path(root).parent / "Maya-data" / "models")]
+             if k is not None and k.is_dir() and k != Path(k.anchor) and not _within(home, k)]
+    if models not in known:
+        out["why"] = f"its models folder {models} is not one Maya downloads into, so Maya deletes nothing in it"
         return out
     folder = pack.parent
     out["folder"] = str(folder)
     project = _res(Path(root))
     items: list = []
 
-    def shared(p: Path) -> bool:                        # (another model runs from it, or from something in it, or links to it)
-        return any(_within(r, p) for r in refs) or _links_into(homes + refs, p)
+    def inside(p: Path) -> bool:                        # (in a models folder Maya knows, not the folder itself)
+        return any(_within(p, k) and p != k for k in known) and not (project and _within(project, p))
+
+    def users(p: Path) -> list:                         # (another model runs from it, from something in it, or links to it)
+        names = [n for n, rs in refs if any(_within(r, p) for r in rs)]
+        return names + [n for n in _linkers(homes, p) if n not in names]
+
+    def keep(p: Path, what: str, names: list, files: int = 0):
+        out["shared"].append({"path": str(p), "what": what, "users": names, **({"files": files} if files else {})})
 
     def covered(p: Path) -> bool:
         return any(_within(p, it) for it, _ in items)
 
     def add(p: Path, what: str):
-        if not covered(p) and (p.exists() or p.is_symlink()):
+        if covered(p) or not (p.exists() or p.is_symlink()):
+            return
+        if inside(p):
             items.append((p, what))
+        elif what == "pack":
+            out["kept"].append(f"The pack Maya built in {p} stays: it is outside Maya's models folders, so Maya does "
+                               "not delete it. Delete it by hand if you no longer want it.")
 
     downloaded = _within(folder, models)
-    if (downloaded and folder != models and not shared(folder) and not _within(project, folder)
+    in_folder = users(folder) if downloaded else []
+    if (downloaded and folder != models and not in_folder and not _within(project, folder)
             and not _within(Path.home().resolve(), folder)):
         add(folder, "folder")                           # (its own folder: the files, the pack, the image encoder)
     else:                                               # (a folder other models' files are in too, or your own)
-        if not shared(pack):
+        if in_folder and folder != models:
+            keep(folder, "folder", in_folder)
+        u = users(pack)
+        if u:
+            keep(pack, "pack", u)
+        else:
             add(pack, "pack")
         if downloaded:
+            held: dict = {}
             for f in pack_shards(pack):
-                if not shared(f):
+                u = users(f)
+                if u:
+                    held.setdefault(tuple(u), []).append(f)
+                else:
                     add(f, "gguf")
+            for u, fs in held.items():
+                keep(folder, "gguf", list(u), len(fs))
         else:
-            out["kept"].append(f"Your own model files in {folder} stay; only the pack Maya built from them goes.")
+            out["kept"].insert(0, f"Your own model files in {folder} stay" + ("; only the pack Maya built from them goes."
+                                   if any(it == pack for it, _ in items) else "."))
     for v in map(_res, vision_files(cfg)):
-        if v is not None and _within(v, models) and not shared(v):
-            add(v, "vision")
+        if v is not None and _within(v, models) and not covered(v):
+            u = users(v)
+            if u:
+                keep(v, "vision", u)
+            else:
+                add(v, "vision")
     d = _res(drafter_of(cfg))
     if d is not None and d.is_file() and _within(d, models):
-        out["drafter_users"] = [p.name for p, c in others if _res(flag(c.get("args") or [], "--dflash")) == d]
-        add(d, "drafter")
+        out["drafter_users"] = [n for n in users(d)]
+        if out["drafter_users"]:                        # (another model drafts with it: it stays theirs)
+            keep(d, "drafter", out["drafter_users"])
+        else:
+            add(d, "drafter")
     for p, what in items:
         n = _size(p)
-        out["items"].append({"path": str(p), "what": what, "bytes": n})
+        out["items"].append({"path": str(p), "what": what, "bytes": n, "linked": _hard_links(p)})
+        out["linked"] += out["items"][-1]["linked"]
         out["bytes"] += n
         if what == "drafter":
             out["drafter"] = n
@@ -1062,7 +1256,8 @@ def delete_plan(root: Path, path: Path) -> dict:
 def delete(root: Path, path: Path, files: bool = False) -> dict:
     """The config at `path` off the list: it, its start scripts, the settings kept beside it (.prev,
     .shared-settings.json); with `files`, delete_plan's files first (a file that cannot be deleted keeps the config,
-    and says which).  {"deleted", "freed" (bytes), "drafter_users" (now drafting with MTP)}."""
+    and says which).  {"deleted", "freed" (bytes), "drafter_users" (always [] now: a drafter another model drafts with
+    stays)}."""
     path = Path(path)
     freed, users, errors = 0, [], []
     if files:
@@ -1082,21 +1277,11 @@ def delete(root: Path, path: Path, files: bool = False) -> dict:
             except OSError as e:
                 errors.append(f"{p} ({e.strerror or e})")
                 continue
-            if it["what"] == "drafter":
+            if it["what"] == "drafter":                 # (only a drafter no other model drafts with: delete_plan)
                 try:
                     p.parent.rmdir()                    # (its folder, when nothing else is in it)
                 except OSError:
                     pass
-                for name in plan["drafter_users"]:      # (another model drafting with it: with MTP from now on)
-                    other = Path(root) / name
-                    cfg = read(other)
-                    if not cfg:
-                        continue
-                    other.with_name(other.name + ".prev").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
-                    st = other.stat()
-                    write(other, {**cfg, "args": drop_flag(cfg.get("args") or [], "--dflash")})
-                    os.utime(other, (st.st_atime, st.st_mtime))
-                    users.append(name)
         if errors:
             raise OSError("could not delete " + "; ".join(errors) + " - the model stays on the list")
     for p in (path, path.with_name(f"run-{path.stem}.sh"), path.with_name(f"run-{path.stem}.bat"),

@@ -85,7 +85,7 @@ class Settings(unittest.TestCase):
 
     def test_glm_read(self):
         s = M.settings_of(M.read(glm_cfg(self.d)))
-        self.assertEqual(s, {"context": 131072, "gpus": [0, 1], "env": {"MAYA_GLM_RAM_HEADROOM_GB": "4"},
+        self.assertEqual(s, {"context": 131072, "gpus": [0, 1], "env": {"MAYA_GLM_RAM_HEADROOM_GB": "4"}, "ablate": False,
                              "images": True, "reserve_mib": None, "parallel": 1, "draft": "mtp", "expert_cache": None,
                              "prefill": None, "kv_streaming": True, "kv_resident": None})
 
@@ -130,7 +130,7 @@ class Settings(unittest.TestCase):
         cfg = M.read(glm_cfg(self.d))
         cfg["args"] = ["--glm-pack", "/m/pack", "--max-context", "32768"]
         self.assertFalse(M.settings_of(cfg)["kv_streaming"])
-        self.assertTrue(M.settings_of(dict(cfg, env={"STRATA_GLM_KV_RESIDENT": "65536"}))["kv_streaming"])
+        self.assertTrue(M.settings_of(dict(cfg, env={"MAYA_GLM_KV_RESIDENT": "65536"}))["kv_streaming"])
         new = M.apply(cfg, {"context": 65536})
         self.assertEqual(new["args"], ["--glm-pack", "/m/pack", "--max-context", "65536"])
         on = M.apply(cfg, {"kv_streaming": True})
@@ -233,12 +233,12 @@ class Settings(unittest.TestCase):
         cfg = M.read(mm3_cfg(self.d))
         self.assertEqual(M.family(cfg), "minimax")
         self.assertEqual(M.family({"exe": "/b/maya-mm3", "args": ["--pack", "/p"]}), "minimax")   # (no installer)
-        self.assertEqual(M.settings_of(cfg), {"context": 65536, "gpus": list(range(9)), "env": {}, "images": True,
+        self.assertEqual(M.settings_of(cfg), {"context": 65536, "gpus": list(range(9)), "env": {}, "ablate": False, "images": True,
                                               "parallel": 1, "draft": "none", "tp": 4, "kv_cache": "int8",
                                               "kv_streaming": True, "kv_resident": None, "cpu_threads": None,
                                               "reserve_gb": None, "prefill_chunk": None, "cache_gb": None,
                                               "dspark_conf": None})
-        self.assertEqual(M.choices(cfg), {"draft": ["dspark", "none"], "images": True})
+        self.assertEqual({k: v for k, v in M.choices(cfg).items() if k != "ablate"}, {"draft": ["dspark", "none"], "images": True})
         new = M.apply(cfg, {"context": 262144, "draft": "dspark", "images": False, "tp": 2, "kv_cache": "fp8",
                             "kv_resident": 65536, "cpu_threads": 24})
         a = new["args"]
@@ -263,10 +263,30 @@ class Settings(unittest.TestCase):
         self.assertEqual((M.flag(off, "--kv-streaming"), "--kv-resident" in off, "--kv-cache" in off), ("off", False, False))
         # a pack without the drafter or the tower: neither offered
         bare = M.read(mm3_cfg(self.d, "maya-mm3-b.json", drafter=False, vision=False))
-        self.assertEqual(M.choices(bare), {"draft": ["none"], "images": False})
+        self.assertEqual(M.choices(bare)["ablate"]["available"], False)
+        self.assertEqual({k: v for k, v in M.choices(bare).items() if k != "ablate"}, {"draft": ["none"], "images": False})
         with self.assertRaisesRegex(ValueError, "no DSpark drafter"):
             M.apply(bare, {"draft": "dspark"})
         self.assertEqual(M.quant_label(cfg, Path("maya-mm3.json")), "EXL3 3.5 bpw")
+
+    def test_exl3_label_from_the_folder(self):
+        """A DeepSeek EXL3 quant set up by hand under the "exl3" key (turboderp's 2.25 bpw): its folder says its bits,
+        not LibertAIDAI's 2.9 the key names; the setup's own folders keep the setup's label."""
+        own = {"exe": "maya-ds4", "args": ["--pack", "/m/DeepSeek-V4.1-Flash-1017-EXL3-2.25bpw/maya-ds4"],
+               "installer": {"family": "deepseek", "ds4_quant": "exl3",
+                             "model_dir": "/m/DeepSeek-V4.1-Flash-1017-EXL3-2.25bpw"}}
+        self.assertEqual(M.quant_label(own, Path("maya-deepseek-exl3-225-hip.json")), "EXL3 2.25 bpw")
+        del own["installer"]["model_dir"]                       # (the pack's folder says it too)
+        self.assertEqual(M.quant_label(own, Path("x.json")), "EXL3 2.25 bpw")
+        setup = {"exe": "maya-ds4", "args": ["--pack", "/m/DeepSeek-V4.1-Flash-1017/maya-ds4"],
+                 "installer": {"family": "deepseek", "ds4_quant": "exl3", "model_dir": "/m/DeepSeek-V4.1-Flash-1017"}}
+        self.assertEqual(M.quant_label(setup, Path("maya-ds4.json")), "EXL3 2.9 bpw")
+        setup35 = {"exe": "maya-ds4", "args": ["--pack", "/m/DeepSeek-V4.1-Flash-1017-3.5bpw/maya-ds4"],
+                   "installer": {"family": "deepseek", "ds4_quant": "exl3-3.5"}}
+        self.assertEqual(M.quant_label(setup35, Path("maya-ds4.json")), "EXL3 3.5 bpw")
+        gguf = {"exe": "maya-ds4", "args": ["--pack", "/m/Some-3bpw-GGUF/maya-ds4"],
+                "installer": {"family": "deepseek", "ds4_quant": "gguf-q8"}}
+        self.assertEqual(M.quant_label(gguf, Path("maya-ds4.json")), "UD-Q8_K_XL")   # (a GGUF: never read)
 
     def test_minimax_answers_at_once(self):
         """maya-mm3 --parallel: read (1 where the config names none), written where it changes, 1-8; the KV streaming and
@@ -594,28 +614,95 @@ class Delete(unittest.TestCase):
                          [f"GLM-5.3-Flash-Maya-M-{i:05d}-of-00003.gguf" for i in (1, 2, 3)] + ["pack", "vision"])
 
     def test_your_own_gguf_stays(self):
+        # a GGUF folder of your own, outside the models folders: nothing in it is deleted, the pack Maya built in it too
         own = self.d / "elsewhere"
+        (self.d / "models").mkdir()
         l = glm_quant(self.d, "Maya-L", folder=own, models=self.d / "models")
         plan = M.delete_plan(self.d, l)
-        self.assertEqual([i["what"] for i in plan["items"]], ["pack"])
+        self.assertTrue(plan["ok"])
+        self.assertEqual(plan["items"], [])
         self.assertIn("Your own model files", plan["kept"][0])
-        M.delete(self.d, l, files=True)
+        self.assertIn("outside Maya's models folders", plan["kept"][1])
+        out = M.delete(self.d, l, files=True)
+        self.assertEqual(out["freed"], 0)
         self.assertEqual(len(list(own.glob("*.gguf"))), 3)
-        self.assertFalse((own / "pack").exists())
+        self.assertTrue((own / "pack" / "index.txt").exists())
+        self.assertFalse(l.exists())                        # (off the list all the same)
 
     def test_a_drafter_another_model_drafts_with(self):
+        # the DFlash2 drafter both quants draft with: it stays, the other model keeps drafting with it
         m = glm_quant(self.d, "Maya-M", dflash=True)
         l = glm_quant(self.d, "Maya-L", dflash=True)
         os.utime(m, (1_700_000_000, 1_700_000_000))
         plan = M.delete_plan(self.d, l)
+        drafter = self.d / "GLM-5.3-Flash-DFlash2" / "GLM-5.3-Flash-DFlash2-Q4_K_M.gguf"
         self.assertEqual(plan["drafter_users"], [m.name])
+        self.assertEqual(plan["drafter"], None)
+        self.assertEqual([(Path(s["path"]).name, s["what"], s["users"]) for s in plan["shared"]],
+                         [(drafter.name, "drafter", [m.name])])
+        self.assertNotIn("drafter", [i["what"] for i in plan["items"]])
         out = M.delete(self.d, l, files=True)
-        self.assertEqual(out["drafter_users"], [m.name])
-        cfg = json.loads(m.read_text())
-        self.assertNotIn("--dflash", cfg["args"])           # (it drafts with MTP now: its drafter is gone)
-        self.assertEqual(M.settings_of(cfg)["draft"], "mtp")
-        self.assertEqual(m.stat().st_mtime, 1_700_000_000)  # (which model starts next: as it was)
-        self.assertIn("--dflash", json.loads(m.with_name(m.name + ".prev").read_text())["args"])
+        self.assertEqual(out["drafter_users"], [])
+        self.assertTrue(drafter.is_file())
+        self.assertIn("--dflash", json.loads(m.read_text())["args"])
+        self.assertEqual(m.stat().st_mtime, 1_700_000_000)  # (its config untouched)
+        self.assertFalse((self.d / "GLM-5.3-Flash" / "Maya-L").exists())
+
+    def test_what_another_model_shares_stays_and_is_named(self):
+        # Maya-L's pack built in Maya-M's folder: the folder, Maya-M's GGUFs and the vision encoder both use stay
+        folder = self.d / "GLM-5.3-Flash"
+        m = glm_quant(self.d, "Maya-M", folder=folder)
+        l = glm_quant(self.d, "Maya-L", folder=folder, pack_name="pack-maya-l")
+        plan = M.delete_plan(self.d, l)
+        got = {(s["what"], Path(s["path"]).name, tuple(s["users"])) for s in plan["shared"]}
+        self.assertIn(("folder", "GLM-5.3-Flash", (m.name,)), got)
+        self.assertIn(("vision", "mmproj.gguf", (m.name,)), got)
+        self.assertEqual(plan["bytes"], sum(i["bytes"] for i in plan["items"]))
+
+    def test_never_outside_the_models_folders(self):
+        # a pack that is a link to a folder elsewhere, a vision file linked out: the real paths are outside - kept
+        outside = self.d / "outside"
+        (outside / "pack").mkdir(parents=True)
+        (outside / "pack" / "index.txt").write_text("i")
+        (outside / "mmproj.gguf").write_bytes(b"v" * 10)
+        l = glm_quant(self.d, "Maya-L", models=self.d / "models")
+        folder = self.d / "models" / "GLM-5.3-Flash" / "Maya-L"
+        cfg = json.loads(l.read_text())
+        try:
+            os.symlink(outside / "pack", folder / "pack-link", target_is_directory=True)
+            os.symlink(outside / "mmproj.gguf", folder / "vision" / "linked.gguf")
+        except (OSError, NotImplementedError):
+            self.skipTest("this file system cannot link")
+        cfg["args"][1] = str(folder / "pack-link")
+        cfg["vision"]["mmproj"] = str(folder / "vision" / "linked.gguf")
+        l.write_text(json.dumps(cfg))
+        plan = M.delete_plan(self.d, l)
+        self.assertTrue(all(not Path(i["path"]).resolve().is_relative_to(outside.resolve()) for i in plan["items"]))
+        M.delete(self.d, l, files=True)
+        self.assertTrue((outside / "pack" / "index.txt").is_file() and (outside / "mmproj.gguf").is_file())
+
+    def test_a_models_folder_maya_does_not_know(self):
+        # a config naming a models folder that is not one (a drive's root, gone): nothing of its files is deleted
+        l = glm_quant(self.d, "Maya-L")
+        cfg = json.loads(l.read_text())
+        cfg["installer"]["models_dir"] = Path(self.d).anchor
+        l.write_text(json.dumps(cfg))
+        plan = M.delete_plan(self.d, l)
+        self.assertEqual((plan["ok"], plan["items"]), (False, []))
+        self.assertIn("not one Maya downloads into", plan["why"])
+
+    def test_hard_links_are_counted(self):
+        m = glm_quant(self.d, "Maya-M")
+        l = glm_quant(self.d, "Maya-L")
+        shard = self.d / "GLM-5.3-Flash" / "Maya-L" / "GLM-5.3-Flash-Maya-L-00001-of-00003.gguf"
+        try:
+            os.link(shard, self.d / "GLM-5.3-Flash" / "Maya-M" / "tables.bin")
+        except (OSError, NotImplementedError):
+            self.skipTest("this file system cannot hard link")
+        plan = M.delete_plan(self.d, l)
+        self.assertEqual(plan["linked"], 1)
+        self.assertEqual(plan["items"][0]["linked"], 1)
+        self.assertTrue(m.exists())
 
     def test_without_the_setups_record(self):
         p = ds4_cfg(self.d)                                 # (no models_dir: which files are its own is not known)
@@ -732,6 +819,16 @@ class DeletePage(Served):
         self.assertNotIn(l.name, [m["file"] for m in b["models"]])
         self.assertFalse((self.d / "GLM-5.3-Flash" / "Maya-L").exists())
 
+    def test_not_while_a_model_downloads(self):
+        l = glm_quant(self.d, "Maya-L")
+        with mock.patch.object(type(self.svc.pull_slot()), "busy", return_value=True):
+            s, b = self.req("POST", "/api/models/delete", {"file": l.name, "files": True})
+            self.assertEqual(s, 400)
+            self.assertIn("downloading", b["error"]["message"])
+            s, _ = self.req("POST", "/api/models/delete", {"file": l.name, "files": True, "dry_run": True})
+            self.assertEqual(s, 200)                          # (what it would free: shown all the same)
+        self.assertTrue(l.exists() and (self.d / "GLM-5.3-Flash" / "Maya-L").is_dir())
+
     def test_not_the_one_running(self):
         for f in (self.cfg.name, "../maya-x.json", "maya-none.json", None):
             s, _ = self.req("POST", "/api/models/delete", {"file": f})
@@ -791,6 +888,72 @@ class DeletePage(Served):
         self.assertFalse(Path(item["path"]).exists())
         s, _ = self.req("POST", "/api/models/leftovers", {"path": item["path"]})
         self.assertEqual(s, 400)
+
+
+class Ablate(unittest.TestCase):
+    """Refusal ablation on the Models page: the switch only with a direction file on an engine that projects it, the
+    default kept beside the engine's arguments (no restart), the direction loaded off by default."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def with_direction(self, p: Path) -> dict:
+        f = self.d / ("DeepSeek-V4.1-Flash" + M.ABLATE_SUFFIX)
+        f.write_bytes(b"GGUF")
+        cfg = M.read(p)
+        cfg["ablate"] = {"file": str(f), "model": "DeepSeek-V4.1-Flash", "fitted_on": "Maya-S"}
+        cfg["args"] = M.ablate_args(cfg, cfg["args"])
+        return cfg
+
+    def test_no_direction_no_switch(self):
+        cfg = M.read(ds4_cfg(self.d))
+        self.assertFalse(M.choices(cfg)["ablate"]["available"])
+        self.assertIn("no refusal direction", M.choices(cfg)["ablate"]["why"])
+        self.assertFalse(M.settings_of(cfg)["ablate"])
+        with self.assertRaises(ValueError):
+            M.apply(cfg, {"ablate": True})
+        self.assertEqual(M.apply(cfg, {"ablate": False})["args"], cfg["args"])   # (the command as before)
+        self.assertNotIn("--ablate", M.ablate_args(cfg, list(cfg["args"])))
+
+    def test_direction_loaded_off_and_default_switch(self):
+        cfg = self.with_direction(ds4_cfg(self.d))
+        self.assertEqual(M.flag(cfg["args"], "--ablate-default"), "off")
+        self.assertTrue(M.choices(cfg)["ablate"]["available"])
+        on = M.apply(cfg, {"ablate": True})
+        self.assertTrue(on["ablate"]["default"])
+        self.assertTrue(M.settings_of(on)["ablate"])
+        self.assertEqual(on["args"], cfg["args"])          # (an engine setting it is not: no restart)
+        self.assertNotIn("sampling", on)                   # (the model's own sampling defaults stay its own)
+        off = M.apply(on, {"ablate": False})
+        self.assertFalse(M.settings_of(off)["ablate"])
+
+    def test_glm_loads_it(self):
+        cfg = M.read(glm_cfg(self.d))
+        f = self.d / "x.gguf"
+        f.write_bytes(b"GGUF")
+        cfg["ablate"] = {"file": str(f)}
+        self.assertTrue(M.choices(cfg)["ablate"]["available"])
+        args = M.ablate_args(cfg, list(cfg["args"]))
+        self.assertEqual(M.flag(args, "--ablate"), str(f))
+        self.assertEqual(M.flag(args, "--ablate-default"), "off")
+        cfg["backend"] = "metal"   # (the Mac engine has no projection)
+        self.assertFalse(M.choices(cfg)["ablate"]["available"])
+        self.assertEqual(M.choices(cfg)["ablate"]["why"], "not available for this model")
+        self.assertNotIn("--ablate", M.ablate_args(cfg, list(cfg["args"])))
+
+    def test_qwen_greyed_out(self):
+        cfg = M.read(glm_cfg(self.d))
+        cfg["installer"]["family"] = "qwen"   # (CYBER-FROST: the `maya` engine without the projection)
+        f = self.d / "x.gguf"
+        f.write_bytes(b"GGUF")
+        cfg["ablate"] = {"file": str(f)}
+        self.assertFalse(M.choices(cfg)["ablate"]["available"])
+        self.assertEqual(M.choices(cfg)["ablate"]["why"], "not available for this model")
+        self.assertNotIn("--ablate", M.ablate_args(cfg, list(cfg["args"])))
 
 
 if __name__ == "__main__":
