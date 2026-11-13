@@ -16,6 +16,18 @@ mkdir -p "$RUN_DIR" "$LOG_DIR"
 cfg() { "${PY:-python3}" -c "import json,sys;d=json.load(open('$CONFIG'));print(eval(sys.argv[1]))" "$1"; }
 PORT="$(cfg "d.get('port',8000)")"
 KEY="$(cfg "d.get('api_key','') or ''")"
+# The CPU-lane copy arena is much faster on the reserved 2 MB pool.  Reserve it before
+# the server starts when asked; the matching stop script returns it to ordinary memory.
+if [ "${DS4_COPY_HUGETLB:-0}" = "1" ] && [ -x /usr/local/sbin/strata-ds4-hugepages ]; then
+    total=$(awk '/^HugePages_Total:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    need=${DS4_HUGEPAGE_GB:-96}
+    pages=$((need * 1024 * 1024 / 2048))
+    if [ "${total:-0}" -lt "$pages" ]; then
+        echo "reserving ${need} GB of 2 MB huge pages..."
+        sudo -n /usr/local/sbin/strata-ds4-hugepages "$need" || \
+            echo "warning: huge-page reserve failed; starting with the ordinary arena" >&2
+    fi
+fi
 
 health() {
   if [ -n "$KEY" ]; then

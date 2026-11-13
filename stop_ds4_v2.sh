@@ -11,6 +11,21 @@ GRACE="${MAYA_STOP_GRACE:-90}"
 cfg() { "${PY:-python3}" -c "import json,sys;d=json.load(open('$CONFIG'));print(eval(sys.argv[1]))" "$1"; }
 PORT="$(cfg "d.get('port',8000)")" || PORT=8000
 
+cleanup_huge() {
+    # The copy arena may be on the global 2 MB huge-page pool.  A stopped server must
+    # return that pool to ordinary memory, or the next model sees only the leftovers.
+    local total
+    total=$(awk '/^HugePages_Total:/{print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    [ "${total:-0}" -gt 0 ] || return 0
+    if [ -x /usr/local/sbin/strata-ds4-hugepages-release ]; then
+        if ! sudo -n /usr/local/sbin/strata-ds4-hugepages-release; then
+            echo "warning: could not release the huge-page pool; run sudo /usr/local/sbin/strata-ds4-hugepages-release" >&2
+        fi
+    else
+        echo "warning: huge pages are reserved (${total}); release them with sudo tools/ds4_hugepages_release.sh" >&2
+    fi
+}
+
 pids=()
 if [ -f "$PID_FILE" ]; then
   p="$(cat "$PID_FILE" 2>/dev/null || true)"
@@ -20,7 +35,7 @@ while read -r p; do [ -n "$p" ] && [ "$(ps -o comm= -p "$p" 2>/dev/null)" = "pyt
 while read -r p; do [ -n "$p" ] && [ "$(ps -o comm= -p "$p" 2>/dev/null)" = "python" ] && pids+=("$p"); done < <(pgrep -f "serve/server[.]py --engine .* --config .*maya-ds4-v2" 2>/dev/null || true)
 while read -r p; do [ -n "$p" ] && pids+=("$p"); done < <(pgrep -f "build/maya-ds4 --serve --pack .*maya-ds4-v2" 2>/dev/null || true)
 
-if [ ${#pids[@]} -eq 0 ]; then echo "DeepSeek v2 未在运行。"; rm -f "$PID_FILE"; exit 0; fi
+if [ ${#pids[@]} -eq 0 ]; then echo "DeepSeek v2 未在运行。"; rm -f "$PID_FILE"; cleanup_huge; exit 0; fi
 mapfile -t pids < <(printf '%s\n' "${pids[@]}" | sort -u)
 echo "正在停止 DeepSeek v2 (PID: ${pids[*]}) ..."
 kill -TERM "${pids[@]}" 2>/dev/null || true
@@ -33,4 +48,5 @@ if [ "$alive" -eq 1 ]; then kill -KILL "${pids[@]}" 2>/dev/null || true; sleep 2
 command -v fuser >/dev/null 2>&1 && fuser -k "$PORT"/tcp >/dev/null 2>&1 || true
 sleep 1
 rm -f "$PID_FILE"
+cleanup_huge
 echo "已停止 v2，端口 $PORT 已释放。"
