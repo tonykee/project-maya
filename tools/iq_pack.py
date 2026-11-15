@@ -456,10 +456,11 @@ def main() -> int:
         per = [t.expected_bytes() // n_expert for t in ts]
         if ts[0].type_name == ts[1].type_name:
             gt = str(ts[0].type_id)
-        elif arch == "qwen4exp":
-            # unsloth's Qwen3.8 UD-IQ1_S: blk.18 keeps gate IQ2_S and up IQ2_XXS.  The row's type column
-            # becomes "gate:up" (only on such a layer - every other row stays byte-identical); the Qwen
-            # engine reads it, an older engine refuses the line as malformed instead of misreading it
+        elif arch in ("qwen4exp", "glm5-next", "glm5next"):
+            # unsloth's Qwen3.8 UD-IQ1_S: blk.18 keeps gate IQ2_S and up IQ2_XXS; Swift's GLM-5.3-Flash
+            # IQ2_XXS keeps layers 3-10 gate IQ2_XXS and up IQ3_XXS.  The row's type column becomes
+            # "gate:up" (only on such a layer - every other row stays byte-identical); the matching
+            # engine reads it, an older engine refuses the line as malformed instead of misreading it.
             gt = "%d:%d" % (ts[0].type_id, ts[1].type_id)
             print("layer %d: gate %s, up %s (mixed types)" % (l, ts[0].type_name, ts[1].type_name))
         else:
