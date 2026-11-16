@@ -345,6 +345,8 @@ void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate_base, const ui
                           float swiglu_limit) {
     const int n = (int) f.n_embd;
     const bool clamp = swiglu_limit != std::numeric_limits<float>::infinity();
+    const int u_type = f.mixed() ? f.u_type : f.gu_type;
+    const size_t u_row = f.mixed() ? f.u_row : f.gu_row;
     if (r1 > r0) {
         if (const RowsFn fn = exact_rows_nt(f.gu_type, nt)) {
             // every gate row of the range for all tokens (each row decoded once per group of tokens), then every up
@@ -360,7 +362,15 @@ void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate_base, const ui
                 uo[(size_t) t] = buf.data() + (size_t) (nt + t) * nr;
             }
             fn(f.gu_type, gate_base + (size_t) r0 * f.gu_row, f.gu_row, n, act, nt, go.data(), 0, nr);
-            fn(f.gu_type, up_base + (size_t) r0 * f.gu_row, f.gu_row, n, act, nt, uo.data(), 0, nr);
+            const RowsFn ufn = f.mixed() ? exact_rows_nt(u_type, nt) : fn;
+            if (ufn != nullptr) {
+                ufn(u_type, up_base + (size_t) r0 * u_row, u_row, n, act, nt, uo.data(), 0, nr);
+            } else {
+                const ggml_vec_dot_t udot = traits(u_type)->vec_dot;
+                for (int r = 0; r < nr; ++r)
+                    for (int t = 0; t < nt; ++t)
+                        udot(n, &uo[(size_t) t][r], 0, up_base + (size_t) (r0 + r) * u_row, 0, act[t], 0, 1);
+            }
             for (int t = 0; t < nt; ++t) {
                 for (int r = 0; r < nr; ++r) {
                     float g = go[(size_t) t][r], u = uo[(size_t) t][r];
@@ -374,15 +384,16 @@ void native_gu_rows_split(const NativeFmt& f, const uint8_t* gate_base, const ui
             return;
         }
     }
-    if (nt == 1 && lane_row4_gu(f, gate_base, up_base, act[0], ff[0], r0, r1, swiglu_limit)) return;   // glm-dsa: MAYA_GLM_LANE_ROW4
+    if (nt == 1 && !f.mixed() && lane_row4_gu(f, gate_base, up_base, act[0], ff[0], r0, r1, swiglu_limit)) return;   // glm-dsa: MAYA_GLM_LANE_ROW4
     const ggml_vec_dot_t dot = traits(f.gu_type)->vec_dot;
+    const ggml_vec_dot_t udot = f.mixed() ? traits(u_type)->vec_dot : dot;
     for (int r = r0; r < r1; ++r) {
         const uint8_t* gr = gate_base + (size_t) r * f.gu_row;
-        const uint8_t* ur = up_base + (size_t) r * f.gu_row;
+        const uint8_t* ur = up_base + (size_t) r * u_row;
         for (int t = 0; t < nt; ++t) {
             float g = 0.f, u = 0.f;
             dot(n, &g, 0, gr, 0, act[t], 0, 1);
-            dot(n, &u, 0, ur, 0, act[t], 0, 1);
+            udot(n, &u, 0, ur, 0, act[t], 0, 1);
             if (clamp) {   // GLM's clamped swiglu (glm_ffn's semantics), matching the device path
                 g = std::fmin(g, swiglu_limit);
                 u = std::fmin(std::fmax(u, -swiglu_limit), swiglu_limit);

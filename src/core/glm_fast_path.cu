@@ -3522,6 +3522,13 @@ bool Glm5Model::fast_cpu_lane_setup(std::string& err) {
             threads = std::min(threads, cores - (n_parts_ - 1));   // a core for each other part's service thread
         else
             threads /= std::max(1, n_parts_);   // a two-part split's parts can run at once: one pool each
+        // MAYA_GLM_CPU_THREADS=N: N logical CPUs for the CPU lane (SMT siblings included).  The default counts
+        // physical cores and leaves the siblings for the service, disk and CUDA threads; a host whose expert
+        // kernels are compute-bound rather than PCIe-bound can ask for more (opt-in, 2..64).
+        if (const char* tv = std::getenv("MAYA_GLM_CPU_THREADS"); tv != nullptr && tv[0] != '\0') {
+            const int n = std::atoi(tv);
+            if (n >= 2) threads = std::min(64, n);
+        }
         if (threads < 2) threads = 0;   // one core is the service thread's
     }
     // a split whose parts have a pool each (two GPUs, or MAYA_GLM_CPU_SHARED=0): each part's pool on CPUs of its own
