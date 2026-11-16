@@ -1,0 +1,67 @@
+{
+  "exe": "/mnt/kioxia/maya/build/maya-ds4",
+  "args": [
+    "--pack",
+    "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-vision",
+    "--max-context",
+    "393216",
+    "--tp",
+    "2",
+    "--dspark",
+    "off",
+    "--mmap-experts",
+    "off",
+    "--experts",
+    "4",
+    "--reserve-mib",
+    "768",
+    "--cpu-threads",
+    "10",
+    "--prefill-chunk",
+    "8192",
+    "--suffix-draft",
+    "3"
+  ],
+  "cwd": "/mnt/kioxia/maya",
+  "tokenizer": "/mnt/kioxia/Maya-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF/maya-ds4-iq2xxs-vision/tokenizer",
+  "model_name": "deepseek-v4.1-flash-gsq-rco-iq2_xxs",
+  "gpu": [
+    0,
+    1
+  ],
+  "sampling": {
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "top_k": 15,
+    "min_p": 0.02,
+    "repetition_penalty": 1.05,
+    "penalty_last_n": 512
+  },
+  "reasoning_effort": "low",
+  "lib_dirs": [
+    "/usr/local/cuda-12.8/lib64",
+    "/usr/local/cuda-12.8/targets/x86_64-linux/lib"
+  ],
+  "port": 8000,
+  "host": "0.0.0.0",
+  "api_key": "llama_local",
+  "log": "/mnt/kioxia/maya/maya-ds4-gsq-384k.log",
+  "env": {
+    "DS4_SETTLE_MS": "2000",
+    "DS4_ENGRAM_CACHE_MB": "2048",
+    "MAYA_DS4_CACHE_SUB_RATIO": "0",
+    "MAYA_DS4_CACHE_SUB_N": "12",
+    "MAYA_DS4_CACHE_SUB_RISK_BUDGET": "0.6",
+    "MAYA_DS4_CACHE_SUB_NORM": "reference",
+    "MAYA_DS4_TP_GGUF_UNEVEN": "1",
+    "MAYA_DS4_HIP_PEER_AR": "1",
+    "DS4_HIP_PEER_AR": "1",
+    "MAYA_DS4_AR2": "0",
+    "DS4_AR2": "0",
+    "DS4_STREAM_ZC": "1",
+    "DS4_STREAM_WIN": "1",
+    "DS4_LAND": "1",
+    "MAYA_DS4_SLOT_KEEP": "1",
+    "MAYA_DS4_VISION_RESIDENT": "1"
+  }
+}

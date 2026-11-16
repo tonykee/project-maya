@@ -192,3 +192,49 @@ cd /mnt/kioxia/maya
 - **未采用的尝试**：v1 profile 移植（decode 38.9，略差）、`--expert-profile none`（24.2，差）、自动 TP（4476 槽，prefill 970 / decode 38.7；能吃下卡1 的 1.6GB 但无速度收益）、`DS4_TP_SHARES=3,6`（3598 槽，更差）、`4,5:3,6`（4166 槽，无收益）、`DS4_SETTLE_MS=4000`（29–32，swap 排队拖慢）、`DS4_SETTLE_MS=500`（24.6，缓存太冷）、`CACHE_SUB_RATIO=0.2`（40–41，与 0.1 持平）、`CACHE_SUB_N=32`（39–42，持平）、显式 2MB hugepage 池（无稳定收益，已回滚）。卡1 的 ~1.6GB 空闲是 expert cache spare/prompt ring/reserve 的余量，硬填无收益，保留 `4,5`。
 - **v2 上限（分工作集）**：2 轮预热后，匹配 warm-up 文本的 decode 到 **49.4 tok/s**（`vram_hit 0.99`、`cpu 2`），已基本到 v1 的 50；换成另一组代码 prompt 的 decode_bench 为 31–40，说明命中率取决于工作集。通用混合 prompt 的稳定区间仍是 40–42 / 970–1000 prefill。要把“任意 prompt 都 50”做成常态，需要按真实业务文本预热，或改 v2 的 `IQ2_XXS` 权重配方；单靠调参/提高 ratio 没有带来额外的稳定收益。
 - **启动默认**：`start_ds4_v2.sh` 现在在 ready 后跑 `tools/warmup_ds4.py --rounds 2`（`MAYA_WARMUP=0` 跳过，`MAYA_WARMUP_ROUNDS=N` 调整）；v2 配置的 `DS4_SETTLE_MS=2000` 保持。
+
+## 2026-11-16：从 Strata 迁到 Maya（DS4 GSQ-RCO + GLM-5.3-Flash）
+
+Strata 主线 0.2.14 移除了 DeepSeek，GLM 也没有进主线的计划；两个模型改由 Maya 维护。
+迁移不是重写引擎：Maya 已有 pack、config 和启动脚本，主要是把 Strata 的调优参数映射过来。
+
+### DS4 GSQ-RCO（`maya-ds4-iq2xxs-vision`）
+
+- 配置：`maya-ds4-gsq-iq2xxs-384k.json`（384K、vision、4 experts、10 CPU threads、8192 chunk、
+  cache sub 0、DSpark off、`--suffix-draft 3`、`MAYA_DS4_VISION_RESIDENT=1`、port 8000）。
+- 启动：`./start_ds4_gsq.sh`（保留 128 GB 2 MB 池）；停止：`./stop_ds4.sh`。
+- 启动日志：114.4 GB CPU lane、13,303 experts、10 threads、2 MB huge pages；2,057 experts/card
+  （vision resident）；copy 51.0 s。
+- 首轮测试（`bench_ds4.py`，2K/8K/16K synthetic + 256-token code decode）：13.2K prefill
+  **989 tok/s**，decode 中位 **25.1 tok/s**。这是 Maya 的 synthetic prompt，和 Strata 的 13K
+  文档 prompt/128-token 不是同一题，不能直接当选胜；同 prompt A/B 还要再跑。
+- Lookup（无 DSpark）：复制文本 `drafts 91 of 102 kept`，8-token 窗口，decode **42.46 tok/s**；
+  Strata 同测试是 4-token 窗口、44/48、41.3。
+- Vision：4 轮图片测试通过（“红色和蓝色” / “有”）；加载日志
+  `the vision tower runs in the engine (GPU 0: 318 MiB kept)`。
+- 旧 API model 名 `deepseek-v4.1-flash-gsq-rco-iq2_xxs-tp2` 仍被接受，客户端不用改。
+- 修复：GSQ-RCO 的 GGUF mmproj vision 是 F32 marker + gate/up 拆分的 `mlp.w1`；Maya 的 loader
+  只收 BF16。提交 `e18d82c` 加了 F32→BF16 的 `read_bf16` 和 gate/up 合并。
+
+### GLM-5.3-Flash Maya-S24
+
+- 配置：`maya-maya-s24.json`（262K、KV int8、expert-cache-per-layer、GLM 调优 env、vision），
+  port 8000。
+- 启动：`./start_glm.sh`；停止：`./stop_glm.sh`。和 DS4 二选一（44 GB 显存放不下两个）。
+- 测试：13.5K prefill **716.9 tok/s**（旧 v1.1.46 基线 608），256-token decode 中位
+  **37.4 tok/s**（旧 33.8，+11%），draft 184-233/254；图片问答“这张图主要是红色和蓝色。”通过。
+- 注意：`MAYA_GLM_DEFER_CPU=2` 是有损项，当前配置保留；如果更看重答案一致性，设 0/去掉。
+
+### 切换
+
+```sh
+# DS4
+./stop_glm.sh 2>/dev/null || true
+./start_ds4_gsq.sh
+
+# GLM
+./stop_ds4.sh
+./start_glm.sh
+```
+
+`stop_ds4.sh` 会把 128 GB 大页池还给系统；`start_ds4_gsq.sh` 再预留。两个模型不能同时跑。
