@@ -55,7 +55,6 @@
     "DS4_STREAM_ZC": "1",
     "DS4_STREAM_WIN": "1",
     "DS4_LAND": "1",
-    "MAYA_DS4_SLOT_KEEP": "1",
-    "DS4_TP_SHARES": "4,5"
+    "MAYA_DS4_SLOT_KEEP": "1"
   }
 }
