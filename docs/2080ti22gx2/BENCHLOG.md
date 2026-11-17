@@ -238,3 +238,55 @@ Strata 主线 0.2.14 移除了 DeepSeek，GLM 也没有进主线的计划；两�
 ```
 
 `stop_ds4.sh` 会把 128 GB 大页池还给系统；`start_ds4_gsq.sh` 再预留。两个模型不能同时跑。
+
+## 2026-11-17：CPU 升级到 E5-2696 v4（22C/44T）后的基线
+
+### 硬件
+
+- CPU：Intel Xeon E5-2696 v4，22 核 / 44 线程，55 MB L3，2.2 GHz 基频。
+- 内存：251 GB（8×32 GB DDR3 RDIMM，X99-T8）；11-15 修复后 sysbench 256M×8 约 **80 GB/s**（修复前约 9.5 GB/s）。
+- 自动线程数：GLM **21**（22 物理核 − 1，两 GPU 共享池）；DS4 **22**（一物理核一线程，含 service）。
+
+### 结果（`--bench`，greedy，thinking off，256 token）
+
+| 模型 | 配置 | Decode 平均 | 单题 | 8K prefill | 备注 |
+|---|---|---:|---|---:|---|
+| GLM-5.3-Flash Maya-S24 | `maya-maya-s24.json`，262K | **40.3** tok/s | 39.3 / 41.4 / 40.1 | 581 tok/s | 旧 CPU 同口径 36.2（**+11.3%**）；CPU lane 21 线程，0.21 ms/expert |
+| DeepSeek GSQ-RCO IQ2_XXS | `maya-ds4.json`，32K，DSpark on | **46.1** tok/s | 42.9 / 40.9 / 54.6 | 618 tok/s | 旧 CPU 参考：GSQ 服务日志 31–33，BENCHLOG Maya-XS 40–42（配置/口径不同）；CPU lane 22 线程 |
+
+- GLM 旧最好 38.4 → **40.3**；旧 CPU 同口径 36.2。
+- DS4 加载 58 s，117.7 GB 专家复制进 RAM 34.9 s。
+- DS4 `--cpu-threads 20` A/B：**46.6**（45.0 / 40.2 / 54.5）vs 自动 22 的 46.1，差 1.1%，在噪声内 → **保留自动 22**。
+- 注意：DS4 连续跑 `--bench` 时 2K/8K prefill 会命中上一次的会话槽（27K/96K tok/s），不是真实值；测 prefill 需要唯一 nonce 或先清 slots。
+
+### GLM 官方校准（`tools/calibrate_glm.py`）
+
+- share sweep：0.00 36.0 / **0.10 40.8** / 0.25 39.9 / 0.50 32.6 / 0.75 29.3 tok/s。
+- thread sweep：21 34.1 / 16 38.9 / 14 35.3 / 10 27.5 / 5 15.1 tok/s。
+- confirmation 后保留 **`MAYA_GLM_PCIE_SHARE=0.36` + 21 线程**（校准内 37.3 tok/s）。
+- 手动 `--bench` 复测 share 0.10：**34.0 tok/s**，明显低于 0.36 的 40.3 → 确认 0.36 是对的，不采用单轮 40.8。
+
+### 配置变更
+
+- `maya-ds4-gsq-iq2xxs-cpu8.json`、`maya-ds4-gsq-iq2xxs-384k.json`：删除 `--cpu-threads 8/10`，交回引擎自动（新 CPU 下 22）。
+- `maya-ds4.json`、`maya-maya-s24.json` 的线程数本来就自动，无需写死。
+- 结果文件：`maya-bench.txt`（GLM 40.3）、`maya-bench.txt.ds4-auto22.bak`（DS4 46.1）、`maya-bench.txt.ds4-cpu20.bak`（DS4 20 线程 46.6）、`logs/bench-20261117-0955-glm-newcpu.log`、`logs/bench-20261117-0958-ds4-newcpu.log`。
+
+## 2026-11-17：CPU 升级到 Xeon E5-2696 v4（22C/44T）
+
+所有启动项不再写死 CPU lane 线程数：
+
+- DS4：活动配置里没有 `--cpu-threads`；默认 0 = 一物理核一线程（22）。
+- GLM Maya-S24：没有 `MAYA_GLM_CPU_THREADS`；默认按物理核。
+- GLM Swift：从 `/mnt/kioxia/maya-glm/maya-swift-glm.json` 删掉 `MAYA_GLM_CPU_THREADS=10`。
+  两个 GPU part 时 GLM 默认留一个服务核，日志是 **21 threads**。
+
+Swift 用同一套 `decode_bench.py` / `bench_ab.py` 复测：
+
+| 项目 | 旧 10 线程 | 新 21 线程 | 变化 |
+|---|---:|---:|---:|
+| 256-token decode 中位 | 33.4 | **36.1** | +8.1% |
+| 13.5K prefill | 721.8 | **736.6** | +2.1% |
+
+CPU lane 每个专家的时间从 0.601/0.452 ms 降到 **0.253/0.198 ms**（CUDA0/CUDA1）。
+单次测量，主机状态有波动；Maya-S24 和 DS4 在新 CPU 上还没重测。
